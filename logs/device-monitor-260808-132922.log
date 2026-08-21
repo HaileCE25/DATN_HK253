@@ -1,0 +1,145 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id da co: car_23
+[CAR NFC] Da nap 13 the tu whitelist (NVS)
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] San sang quet the (backup, khong can mang)...
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob da ket noi, dang cho key_root tu Gateway...
+[CAN DEBUG] TX_PIN=4 RX_PIN=5 MODE=NORMAL
+[CAN] TWAI initialized
+[CAR] Keyfob ket noi lan dau - bat dau xin key_root qua CAN...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 3000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 6000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 12000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 24000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 30000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 30000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 30000 ms...
+Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1). 
+
+Core  1 register dump:
+PC      : 0x42054cfc  PS      : 0x00060034  A0      : 0x8201e08c  A1      : 0x3fc98300  
+A2      : 0x00000080  A3      : 0x0000006c  A4      : 0x3fc9cb90  A5      : 0x00060023  
+A6      : 0x00060021  A7      : 0x00000001  A8      : 0x0000000d  A9      : 0x6002b000  
+A10     : 0x00000080  A11     : 0x00000080  A12     : 0x3fc9c658  A13     : 0x00000004  
+A14     : 0x00000080  A15     : 0x00000077  SAR     : 0x0000001b  EXCCAUSE: 0x00000006  
+EXCVADDR: 0x00000000  LBEG    : 0x403825f8  LEND    : 0x40382606  LCOUNT  : 0x00000001  
+Core  1 was running in ISR context:
+EPC1    : 0x42054b23  EPC2    : 0x00000000  EPC3    : 0x00000000  EPC4    : 0x42054cfc
+
+
+Backtrace: 0x42054cf9:0x3fc98300 0x4201e089:0x3fc98320 0x40378ae9:0x3fc98370 0x42017ba8:0x3fcf6d70 0x42017ca9:0x3fcf6db0 0x4201804a:0x3fcf6de0 0x4201807a:0x3fcf6e30 0x420180ad:0x3fcf6e50 0x42004bc5:0x3fcf6e80 0x42003296:0x3fcf6ea0
+
+
+Core  0 register dump:
+PC      : 0x42054f06  PS      : 0x00060e34  A0      : 0x820256e5  A1      : 0x3fcf4790  
+A2      : 0x00000000  A3      : 0x80000001  A4      : 0x803823c5  A5      : 0x3fca4f40  
+A6      : 0x00060023  A7      : 0x00000003  A8      : 0x82025222  A9      : 0x3fcf4760  
+A10     : 0x00000000  A11     : 0x00ffffff  A12     : 0x80378076  A13     : 0x3fca4f10  
+A14     : 0x00000001  A15     : 0x3fcf4540  SAR     : 0x0000001d  EXCCAUSE: 0x00000006  
+EXCVADDR: 0x00000000  LBEG    : 0x00000000  LEND    : 0x00000000  LCOUNT  : 0x00000000  
+
+
+Backtrace: 0x42054f03:0x3fcf4790 0x420256e2:0x3fcf47b0 0x403805b4:0x3fcf47d0
+
+
+
+
+ELF file SHA256: 77a238b55f2e379c
+
+Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1). 
+
+Core  1 register dump:
+PC      : 0x4038679b  PS      : 0x00020434  A0      : 0x820381de  A1      : 0x3fc98110  
+A2      : 0x00020423  A3      : 0xa5a5a5a5  A4      : 0x820381de  A5      : 0x00060425  
+A6      : 0xfffbfff0  A7      : 0x00000046  A8      : 0x3fc98d5c  A9      : 0x00000001  
+A10     : 0x60000000  A11     : 0x00000001  A12     : 0x0000000a  A13     : 0x3fc980fc  
+A14     : 0x00000001  A15     : 0x3fcf47d0  SAR     : 0x0000000a  EXCCAUSE: 0x00000006  
+EXCVADDR: 0x00000000  LBEG    : 0x400570e8  LEND    : 0x400570f3  LCOUNT  : 0x00000000  
+Core  1 was running in ISR context:
+EPC1    : 0x42054b23  EPC2    : 0x00000000  EPC3    : 0x00000000  EPC4    : 0x4038679b
+
+
+Backtrace: 0x40386798:0x3fc98110 0x420381db:0x3fc98120 0x420387dd:0x3fc98140 0x42025bba:0x3fc98160 0x42025e96:0x3fc981d0 0x40377919:0x3fc98220 0x403772a8:0x3fc98240 0x00040022:0x3fc98300 |<-CORRUPTED
+
+
+Core  0 register dump:
+PC      : 0x42054f06  PS      : 0x00060e34  A0      : 0x820256e5  A1      : 0x3fcf4790  
+A2      : 0x00000000  A3      : 0x80000001  A4      : 0x803823c5  A5      : 0x3fca4f40  
+A6      : 0x00060023  A7      : 0x00000003  A8      : 0x82025222  A9      : 0x3fcf4760  
+A10     : 0x00000000  A11     : 0x00ffffff  A12     : 0x80378076  A13     : 0x3fca4f10  
+A14     : 0x00000001  A15     : 0x3fcf4540  SAR     : 0x0000001d  EXCCAUSE: 0x00000006  
+EXCVADDR: 0x00000000  LBEG    : 0x00000000  LEND    : 0x00000000  LCOUNT  : 0x00000000  
+
+
+Backtrace: 0x42054f03:0x3fcf4790 0x420256e2:0x3fcf47b0 0x403805b4:0x3fcf47d0
+
+
+
+
+ELF file SHA256: 77a238b55f2e379c
+
+Re-entered core dump! Exception happened during core dump!
+Rebooting...
+���ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x42025da7
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id da co: car_23
+[CAR NFC] Da nap 13 the tu whitelist (NVS)
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] San sang quet the (backup, khong can mang)...
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob da ket noi, dang cho key_root tu Gateway...
+[CAN DEBUG] TX_PIN=4 RX_PIN=5 MODE=NORMAL
+[CAN] TWAI initialized
+[CAR] Keyfob ket noi lan dau - bat dau xin key_root qua CAN...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 3000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 6000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 12000 ms...

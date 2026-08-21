@@ -1,0 +1,11 @@
+
+===============================
+      CAR ECU START
+===============================
+[  1171][E][Preferences.cpp:483] getString(): nvs_get_str len fail: car_id NOT_FOUND
+[CAR PROVISION] Chưa có car_id - cho lệnh SET_CAR_ID:<value> qua Serial
+[  1180][E][Preferences.cpp:483] getString(): nvs_get_str len fail: nfc_whitelist NOT_FOUND
+[CAR NFC] Đã nạp 0 thẻ từ whitelist
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] Sẵn sàng quét thẻ...

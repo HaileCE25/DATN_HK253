@@ -1,0 +1,48 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x28 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id đã có: car_29
+[CAR NFC] Đã nạp 1 thẻ từ whitelist
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] Sẵn sàng quét thẻ...
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob đã kết nối, đang chờ key_root từ Gateway...
+[CAN DEBUG] TX_PIN=4 RX_PIN=5 MODE=NORMAL
+[CAN] TWAI initialized
+[CAR] Keyfob kết nối lần đầu - bắt đầu xin key_root qua CAN...
+[CAR] Đã gửi yêu cầu xin key_root qua CAN, chờ phản hồi từ Gateway...
+[CAR ERROR] Không nhận được phản hồi từ Gateway
+[CAR] Gateway chưa sẵn sàng, thử lại sau 5000 ms...
+[ISOTP ERROR] Không nhận được Flow Control
+[CAR ERROR] Gửi yêu cầu xin key_root qua CAN thất bại
+[CAR] Gateway chưa sẵn sàng, thử lại sau 5000 ms...
+[CAR] Đã gửi yêu cầu xin key_root qua CAN, chờ phản hồi từ Gateway...
+[CAR] Đã nhận key_root (16 byte) từ Gateway qua CAN, đã áp dụng cho HMAC
+[CAR DEBUG] Key_root nhận được: C3 53 CD A8 C0 17 83 5F F7 DF 33 1C 7C 8A CC D5 
+[CAR] key_root đã sẵn sàng, dừng retry.
+[CAR AUTH ] Generating challenge
+[CAR DEBUG] Nonce : 79 B0 9B 04 A3 4B A6 2A 4C 6E A3 0E AD 18 7F 17 
+[CAR TX   ] CHALLENGE
+[CAR RX   ] RESPONSE
+[CAR AUTH ] Verifying HMAC
+[CAR DEBUG] Token : BA CD 72 61 2F 96 1B 11 79 33 AA 71 F0 87 E3 10 A4 3C F7 0C 47 9E 87 84 C1 87 F6 D7 8F F9 30 17 
+[CAR AUTH ] SUCCESS
+[CAR TX   ] AUTH_OK
+[UWB MOCK] Init (no real hardware)
+[UWB MOCK] Ranging started
+[CAR UWB  ] Ranging started
+[UWB MOCK] distance=1.29 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.30 m

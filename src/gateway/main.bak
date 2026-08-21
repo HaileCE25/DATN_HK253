@@ -1,0 +1,226 @@
+#include <Arduino.h>
+#include "mbedtls/aes.h"
+
+#include "uart/uart_transport.h"
+#include "uart/uart_payloads.h"
+#include "uart/uart_ids.h"
+#include "cloud/wifi_manager.h"
+#include "cloud/firebase_manager.h"
+#include "cloud/cloud_config.h"
+#include "shared/config.h"
+
+// -----------------------------------------------------------------------------
+// Gateway - nhận KeyRequestPayload (car_id) từ Car qua UART, tra Firebase
+// (/SecureKeys/{car_id}: iv + encrypted_key_root), GIẢI MÃ AES-256-CTR
+// bằng FIREBASE_MASTER_KEY (đối xứng với Admin Tool bên Python), rồi gửi
+// key_root đã giải mã (dạng byte thô) cho Car qua UART.
+//
+// Lưu ý: đây KHÔNG phải ECDH thật (không có trao đổi khóa động) - chỉ
+// là symmetric key tĩnh biết trước cả 2 phía. Đủ cho giai đoạn hiện tại,
+// có thể nâng cấp lên ECDH sau nếu cần.
+// -----------------------------------------------------------------------------
+
+static bool HexStringToBytes(const String& hex, uint8_t* outBytes, size_t maxBytes, size_t& outLen)
+{
+    size_t hexLen = hex.length();
+    if (hexLen % 2 != 0)
+        return false;
+
+    size_t byteLen = hexLen / 2;
+    if (byteLen > maxBytes)
+        return false;
+
+    for (size_t i = 0; i < byteLen; i++)
+    {
+        char high = hex.charAt(i * 2);
+        char low = hex.charAt(i * 2 + 1);
+
+        auto hexDigit = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+
+        int h = hexDigit(high);
+        int l = hexDigit(low);
+        if (h < 0 || l < 0)
+            return false;
+
+        outBytes[i] = (uint8_t)((h << 4) | l);
+    }
+
+    outLen = byteLen;
+    return true;
+}
+
+// Giải mã AES-256-CTR. iv phải đúng 16 byte. Plaintext length luôn bằng
+// ciphertext length (stream cipher, không padding).
+static bool AesCtrDecrypt(
+    const uint8_t* key32,
+    const uint8_t* iv16,
+    const uint8_t* ciphertext,
+    size_t ctLen,
+    uint8_t* outPlaintext)
+{
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+
+    // CTR mode luôn dùng "encrypt key schedule" kể cả khi giải mã -
+    // đây là đặc điểm chuẩn của chế độ CTR (XOR keystream đối xứng).
+    if (mbedtls_aes_setkey_enc(&aes, key32, 256) != 0)
+    {
+        mbedtls_aes_free(&aes);
+        return false;
+    }
+
+    uint8_t nonceCounter[16];
+    memcpy(nonceCounter, iv16, 16);
+    uint8_t streamBlock[16] = {0};
+    size_t ncOff = 0;
+
+    int ret = mbedtls_aes_crypt_ctr(
+        &aes, ctLen, &ncOff, nonceCounter, streamBlock, ciphertext, outPlaintext);
+
+    mbedtls_aes_free(&aes);
+    return ret == 0;
+}
+
+static void HandleKeyRequest(const UartFrame& requestFrame)
+{
+    KeyRequestPayload request;
+    if (!DeserializeKeyRequest(requestFrame.data, requestFrame.length, request))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] Invalid KeyRequest payload");
+        return;
+    }
+
+    LOG_PRINTF("[GATEWAY] KeyRequest nhan duoc, car_id=%s\n", request.car_id);
+
+    String basePath = String("/SecureKeys/") + request.car_id;
+    String ivHex, encryptedHex;
+
+    UartFrame responseFrame = {};
+
+    auto sendError = [&]() {
+        responseFrame.type = UART_MSG_ERROR;
+        responseFrame.length = 0;
+        UART_SendFrame(responseFrame);
+    };
+
+    if (!Firebase_ReadString((basePath + "/iv").c_str(), ivHex) ||
+        !Firebase_ReadString((basePath + "/encrypted_key_root").c_str(), encryptedHex))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] Firebase lookup that bai (iv/encrypted_key_root)");
+        sendError();
+        return;
+    }
+
+    uint8_t iv[16];
+    size_t ivLen = 0;
+    if (!HexStringToBytes(ivHex, iv, sizeof(iv), ivLen) || ivLen != 16)
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] IV khong hop le (phai dung 16 byte)");
+        sendError();
+        return;
+    }
+
+    uint8_t ciphertext[64];
+    size_t ctLen = 0;
+    if (!HexStringToBytes(encryptedHex, ciphertext, sizeof(ciphertext), ctLen))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] encrypted_key_root khong dung dinh dang hex");
+        sendError();
+        return;
+    }
+
+    uint8_t plaintext[64] = {0};
+    if (!AesCtrDecrypt(FIREBASE_MASTER_KEY, iv, ciphertext, ctLen, plaintext))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] AES decrypt that bai");
+        sendError();
+        return;
+    }
+
+    // plaintext là UTF-8 của chuỗi hex key_root gốc (vd "45a9a369...").
+    // Build String thủ công theo đúng ctLen - tránh dựa vào '\0' vì
+    // plaintext không đảm bảo có null-terminator ở đúng vị trí.
+    String keyRootHex;
+    keyRootHex.reserve(ctLen);
+    for (size_t i = 0; i < ctLen; i++)
+    {
+        keyRootHex += (char)plaintext[i];
+    }
+
+    KeyResponsePayload response = {};
+    size_t keyLen = 0;
+
+    if (!HexStringToBytes(keyRootHex, response.key_root, sizeof(response.key_root), keyLen))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] Sau khi giai ma, key_root khong dung dinh dang hex");
+        sendError();
+        return;
+    }
+
+    response.key_len = (uint8_t)keyLen;
+
+    responseFrame.type = UART_MSG_KEY_RESPONSE;
+    if (!SerializeKeyResponse(response, responseFrame.data, sizeof(responseFrame.data)))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] Serialize KeyResponse that bai");
+        return;
+    }
+    responseFrame.length = (uint8_t)KEY_RESPONSE_PAYLOAD_SIZE;
+
+    if (UART_SendFrame(responseFrame))
+    {
+        LOG_PRINTF("[GATEWAY] Da giai ma va gui key_root (%u byte) cho car_id=%s\n",
+                   (unsigned)keyLen, request.car_id);
+    }
+    else
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] Gui KeyResponse that bai");
+    }
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(1000);
+
+    LOG_PRINTLN("===============================");
+    LOG_PRINTLN("   GATEWAY START");
+    LOG_PRINTLN("===============================");
+
+    UART_Init();
+
+    if (!WiFi_Connect())
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] WiFi connect failed");
+        return;
+    }
+
+    if (!Firebase_Init())
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] Firebase init failed");
+        return;
+    }
+
+    LOG_PRINTLN("[GATEWAY] San sang, cho KeyRequest tu Car...");
+}
+
+void loop()
+{
+    UartFrame frame;
+    if (UART_ReceiveFrame(frame, 100))
+    {
+        if (frame.type == UART_MSG_KEY_REQUEST)
+        {
+            HandleKeyRequest(frame);
+        }
+        else
+        {
+            LOG_PRINTF("[GATEWAY ERROR] Unknown UART msg type: 0x%02X\n", frame.type);
+        }
+    }
+}

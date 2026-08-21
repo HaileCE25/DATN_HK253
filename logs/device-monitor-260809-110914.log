@@ -1,0 +1,18 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x28 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id đã có: car_29
+[CAR NFC] Đã nạp 1 thẻ từ whitelist
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] Sẵn sàng quét thẻ...

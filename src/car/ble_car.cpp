@@ -10,14 +10,23 @@ static NimBLECharacteristic* pRxCharacteristic = nullptr;
 
 static bool deviceConnected = false;
 static CarState carState = CAR_IDLE;
-static uint8_t currentNonce[16];
-static uint32_t challengeSendTime = 0;
-static void generate_challenge(uint8_t* out);
 
-static void generate_challenge(uint8_t* out)
-{
-    esp_fill_random(out, 16);
-}
+// Cooldown: sau mỗi lần disconnect (bất kể lý do), car ngừng advertising
+// trong BLE_COOLDOWN_MS trước khi advertise lại. onDisconnect() không
+// phân biệt được disconnect do fail hay bình thường, nên áp dụng đồng
+// nhất cho mọi lần disconnect - đơn giản và vẫn đạt mục tiêu chống
+// vòng lặp found->connect->disconnect liên tục (xem log Test 1).
+static bool advertising = false;
+static uint32_t cooldownUntil = 0;
+
+// Chỉ cho phép ĐÚNG 1 kết nối tại 1 thời điểm - nếu không giới hạn,
+// bất kỳ thiết bị BLE nào (kể cả không đúng Keyfob) cũng kết nối được
+// song song, gây: (1) carState/savedNonce (biến toàn cục dùng chung)
+// bị nhiều kết nối ghi đè lẫn nhau, (2) notify() mặc định gửi tới MỌI
+// thiết bị đang subscribe - kẻ lạ có thể "nghe lén" CHALLENGE dù không
+// giải mã được (không có key_root, nhưng vẫn thấy được luồng trao
+// đổi). Đã xác nhận qua thực nghiệm bằng nRF Connect.
+static bool s_hasActiveConnection = false;
 
 /*==================== CALLBACK ====================*/
 
@@ -25,19 +34,40 @@ class ServerCallbacks : public NimBLEServerCallbacks
 {
     void onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo) override
     {
+        if (s_hasActiveConnection)
+        {
+            // Đã có 1 kết nối khác đang hoạt động - từ chối ngay,
+            // KHÔNG đụng tới bất kỳ biến trạng thái nào của phiên
+            // đang chạy (deviceConnected, carState... giữ nguyên).
+            LOG_PRINTLN("[CAR BLE  ] Da co ket noi khac dang hoat dong - tu choi ket noi moi");
+            pSrv->disconnect(connInfo.getConnHandle());
+            return;
+        }
+
+        s_hasActiveConnection = true;
+
         deviceConnected = true;
+        advertising = false; // NimBLE tự dừng advertising khi có connection
         carState = CAR_CONNECTED;
         NimBLEDevice::getServer()->updateConnParams(connInfo.getConnHandle(), 16, 32, 0, 400);
-        Serial.println("[CAR BLE  ] Connected");
+        LOG_PRINTLN("[CAR BLE  ] Connected");
     }
 
+    // Nơi DUY NHẤT đưa carState về CAR_IDLE và dọn toàn bộ session state.
+    // KHÔNG advertise lại ngay ở đây - chỉ đặt mốc thời gian cooldown.
+    // Việc advertise lại được BLE_Car_Task() polling và thực hiện sau
+    // khi cooldown hết hạn.
     void onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int reason) override
     {
+        s_hasActiveConnection = false;
+
         deviceConnected = false;
         carState = CAR_IDLE;
-        memset(currentNonce, 0, sizeof(currentNonce));
-        Serial.println("[CAR BLE  ] Disconnected");
-        NimBLEDevice::startAdvertising();
+
+        cooldownUntil = millis() + BLE_COOLDOWN_MS;
+
+        LOG_PRINTF("[CAR BLE  ] Disconnected - cooldown %lu ms\n",
+                      (unsigned long)BLE_COOLDOWN_MS);
     }
 };
 
@@ -64,28 +94,25 @@ class RXCallbacks : public NimBLECharacteristicCallbacks
 
         if (xQueueSend(bleRxQueue, &pkt, 0) != pdPASS)
         {
-            Serial.println("[CAR ERROR] RX queue full");
+            LOG_PRINTLN("[CAR ERROR] RX queue full");
         }
 
-        Serial.printf("[CAR RX   ] %s\n",
+        LOG_PRINTF("[CAR RX   ] %s\n",
               PacketTypeToString(pkt.type));
 
-        /*================ STATE MACHINE =================*/
-
-        switch(pkt.type)
+        /*================ TRANSPORT-LEVEL STATE =================
+         * Callback chỉ set state phản ánh SỰ KIỆN TRANSPORT đã xảy ra,
+         * KHÔNG set state phản ánh KẾT QUẢ NGHIỆP VỤ. Việc set
+         * CAR_CHALLENGE_SENT / CAR_AUTHENTICATED do TaskLogic gọi qua
+         * BLE_Car_SetState() sau khi thực sự xử lý xong.
+         */
+        switch (pkt.type)
         {
         case PKT_READY:
-
             carState = CAR_KEY_RECEIVED;
-
-            //Serial.println("[CAR RX   ] READY");
-
             break;
 
-        case PKT_RESPONSE:
-            carState = CAR_AUTHENTICATED;
-            //Serial.println("[CAR RX   ] Response");
-
+        default:
             break;
         }
     }
@@ -113,16 +140,16 @@ bool BLE_Car_Init()
     pRxCharacteristic->setCallbacks(new RXCallbacks());
     if (!pTxCharacteristic || !pRxCharacteristic)
     {
-        Serial.println("[CAR ERROR] Create characteristic failed");
+        LOG_PRINTLN("[CAR ERROR] Create characteristic failed");
         return false;
     }
-    //service->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(SERVICE_UUID);
     adv->start();
+    advertising = true;
 
-    Serial.println("[CAR BLE  ] Advertising");
+    LOG_PRINTLN("[CAR BLE  ] Advertising");
     return true;
 }
 
@@ -150,50 +177,57 @@ bool BLE_Car_SendPacket(const Packet& pkt)
     bool ok = pTxCharacteristic->notify();
     if (!ok)
     {
-        Serial.println("[CAR ERROR] Notify failed");
+        LOG_PRINTLN("[CAR ERROR] Notify failed");
         return false;
     }
-    Serial.printf("[CAR TX   ] %s\n",
+    LOG_PRINTF("[CAR TX   ] %s\n",
               PacketTypeToString(pkt.type));
     return true;
+}
+
+/*==================== DISCONNECT ====================*/
+
+bool BLE_Car_Disconnect()
+{
+    if (!deviceConnected || pServer == nullptr)
+        return false;
+
+    if (pServer->getConnectedCount() == 0)
+        return false;
+
+    std::vector<uint16_t> peerIds = pServer->getPeerDevices();
+    if (peerIds.empty())
+        return false;
+
+    pServer->disconnect(peerIds[0]);
+    // Không set carState ở đây - onDisconnect() sẽ lo việc đó
+    // khi NimBLE stack xác nhận ngắt xong.
+    return true;
+}
+
+/*==================== STATE ACCESSORS ====================*/
+
+void BLE_Car_SetState(CarState newState)
+{
+    carState = newState;
+}
+
+CarState BLE_Car_GetState()
+{
+    return carState;
 }
 
 /*==================== TASK ====================*/
 
 void BLE_Car_Task()
 {
-    //Serial.printf("[CAR] state=%d\n", carState);
-    // if (carState != CAR_KEY_RECEIVED)
-    //     return;
-
-    // Packet pkt = {};
-
-    // pkt.type = PKT_CHALLENGE;
-    // pkt.length = 16;
-
-    // generate_challenge(currentNonce);
-    // memcpy(pkt.data, currentNonce, 16);
-
-    // if (BLE_Car_SendPacket(pkt))
-    // {
-    //     carState = CAR_CHALLENGE_SENT;
-    //     challengeSendTime = millis();
-    //     Serial.println("[CAR] Challenge sent");
-    // }
-
-    if (carState == CAR_CHALLENGE_SENT)
+    // Hết cooldown, chưa connect, chưa advertise -> advertise lại.
+    if (!deviceConnected && !advertising &&
+        millis() >= cooldownUntil)
     {
-        if (millis() - challengeSendTime > 3000)
-        {
-            Serial.println("[CAR AUTH ] Response timeout");
-            if (pServer->getConnectedCount() > 0) {
-                std::vector<uint16_t> peerIds = pServer->getPeerDevices();
-                if (!peerIds.empty()) {
-                    pServer->disconnect(peerIds[0]); 
-                }
-            }
-            carState = CAR_IDLE;
-        }
+        NimBLEDevice::startAdvertising();
+        advertising = true;
+        LOG_PRINTLN("[CAR BLE  ] Advertising");
     }
 }
 

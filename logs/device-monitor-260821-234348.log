@@ -1,0 +1,35 @@
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id đã có: car_30
+[CAR NFC] Đã nạp 1 thẻ từ whitelist
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] Sẵn sàng quét thẻ...
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob đã kết nối, đang chờ key_root từ Gateway...
+[CAN DEBUG] TX_PIN=17 RX_PIN=18 MODE=NORMAL
+[CAN] TWAI initialized
+[CAR] Keyfob kết nối lần đầu - bắt đầu xin key_root qua CAN...
+[CAR] Đã gửi yêu cầu xin key_root qua CAN, chờ phản hồi từ Gateway...
+[CAR] Đã nhận key_root (16 byte) từ Gateway qua CAN, đã áp dụng cho HMAC
+[CAR DEBUG] Key_root nhận được: 0E 01 00 62 5F 70 6C F3 08 6E 16 96 0A 78 1E BF 
+[CAR] key_root đã sẵn sàng, dừng retry.
+[CAR AUTH ] Generating challenge
+[CAR DEBUG] Nonce : 69 74 91 B9 08 3F 17 34 CE DA A1 58 CE 96 E0 4E 
+[CAR TX   ] CHALLENGE
+[CAR RX   ] RESPONSE
+[CAR AUTH ] Verifying HMAC
+[CAR DEBUG] Token : 15 29 05 F1 58 0E 56 F3 AE C4 FC C8 EA 1D 0E D9 59 94 17 63 81 05 E3 02 67 2C D8 F0 87 82 F7 92 
+[CAR AUTH ] SUCCESS
+[CAR TX   ] AUTH_OK
+[UWB MOCK] Init (no real hardware)
+[UWB MOCK] Ranging started
+[CAR UWB  ] Ranging started
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.22 m
+[UWB MOCK] distance=1.33 m
+[UWB MOCK] distance=1.59 m
+[UWB MOCK] distance=1.79 m

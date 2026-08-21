@@ -1,0 +1,32 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id đã có: car_27
+[CAR NFC] Đã nạp 1 thẻ từ whitelist
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] Sẵn sàng quét thẻ...
+[CAR BLE  ] Connected
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob báo cáo car_id = "car_26" không khớp với xe này (car_27) - từ chối kết nối
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+UID_DETECTED:27059895
+[CAR NFC] Mã số thẻ 27059895 không hợp lệ, từ chối mở cửa.
+UID_DETECTED:EB351207
+[CAR NFC] Mã số thẻ EB351207 hợp lệ. Mở khóa thành công
+[CAR NFC] Đã mở khóa xe. Tạm dừng quét trong 30000 ms

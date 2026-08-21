@@ -1,0 +1,120 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id da co: car_24
+[CAR NFC] Da nap 1 the tu whitelist (NVS)
+[NFC] RC522 initialized
+[CAR NFC] San sang quet the (backup, khong can mang)...
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob da ket noi, dang cho key_root tu Gateway...
+[CAN DEBUG] TX_PIN=4 RX_PIN=5 MODE=NORMAL
+[CAN] TWAI initialized
+[CAR] Keyfob ket noi lan dau - bat dau xin key_root qua CAN...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...

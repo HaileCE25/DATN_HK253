@@ -1,0 +1,325 @@
+#include <Arduino.h>
+#include "protocol/packet.h"
+#include "car/ble_car.h"
+#include "os/queue.h"
+#include "crypto/hmac.h"
+#include "uart/uart_transport.h"
+#include "uart/uart_payloads.h"
+#include "uart/uart_ids.h"
+#include "uwb/uwb_hal.h"
+
+constexpr const char* CAR_ID = "car_12";
+constexpr uint32_t KEY_REQUEST_RETRY_DELAY_MS = 3000;
+
+TaskHandle_t TaskBLE_Handle = nullptr;
+TaskHandle_t TaskLogic_Handle = nullptr;
+TaskHandle_t TaskKeyRequest_Handle = nullptr;
+
+static uint8_t savedNonce[16];
+
+static bool waitingForResponse = false;
+static uint32_t challengeSendTime = 0;
+
+// true khi đã có key_root THẬT từ Gateway (cache - chỉ xin 1 lần, các
+// lần Keyfob connect sau dùng lại, không xin lại nữa).
+static volatile bool hasRealKey = false;
+
+// TaskKeyRequest chờ tín hiệu này (chỉ được "give" lần đầu tiên
+// PKT_READY tới khi chưa có key) rồi mới bắt đầu xin key qua UART -
+// thay vì tự chạy ngay lúc boot dù chưa có Keyfob nào kết nối.
+static SemaphoreHandle_t keyRequestTrigger;
+
+/*=====================================================
+        XIN KEY_ROOT TỪ GATEWAY QUA UART (1 lần thử)
+=====================================================*/
+static bool RequestKeyRootFromGatewayOnce()
+{
+    KeyRequestPayload request = {};
+    strncpy(request.car_id, CAR_ID, sizeof(request.car_id) - 1);
+
+    UartFrame requestFrame = {};
+    requestFrame.type = UART_MSG_KEY_REQUEST;
+
+    if (!SerializeKeyRequest(request, requestFrame.data, sizeof(requestFrame.data)))
+    {
+        LOG_PRINTLN("[CAR ERROR] Serialize KeyRequest that bai");
+        return false;
+    }
+    requestFrame.length = (uint8_t)KEY_REQUEST_PAYLOAD_SIZE;
+
+    if (!UART_SendFrame(requestFrame))
+    {
+        LOG_PRINTLN("[CAR ERROR] Gui KeyRequest that bai");
+        return false;
+    }
+
+    LOG_PRINTLN("[CAR] Da gui KeyRequest, cho phan hoi tu Gateway...");
+
+    UartFrame responseFrame;
+    if (!UART_ReceiveFrame(responseFrame, 5000))
+    {
+        LOG_PRINTLN("[CAR ERROR] Khong nhan duoc phan hoi tu Gateway (timeout)");
+        return false;
+    }
+
+    if (responseFrame.type == UART_MSG_ERROR)
+    {
+        LOG_PRINTLN("[CAR ERROR] Gateway bao loi khi lookup key_root tren Firebase");
+        return false;
+    }
+
+    if (responseFrame.type != UART_MSG_KEY_RESPONSE)
+    {
+        LOG_PRINTF("[CAR ERROR] Nhan sai loai frame tu Gateway: 0x%02X\n", responseFrame.type);
+        return false;
+    }
+
+    KeyResponsePayload response;
+    if (!DeserializeKeyResponse(responseFrame.data, responseFrame.length, response))
+    {
+        LOG_PRINTLN("[CAR ERROR] Deserialize KeyResponse that bai");
+        return false;
+    }
+
+    Crypto_SetKey(response.key_root, response.key_len);
+    LOG_PRINTF("[CAR] Da nhan key_root (%u byte) tu Gateway, da ap dung cho HMAC\n",
+               (unsigned)response.key_len);
+    return true;
+}
+
+/*=====================================================
+        TASK: XIN KEY_ROOT - CHỜ TÍN HIỆU MỚI CHẠY
+=====================================================
+ * Đứng yên (block vô thời hạn) cho tới khi TaskLogic "give" semaphore
+ * (lần đầu tiên PKT_READY tới mà chưa có key). Sau đó retry liên tục
+ * tới khi thành công, set hasRealKey rồi tự kết thúc - từ lúc đó các
+ * lần Keyfob connect tiếp theo dùng lại key đã cache, không gọi lại
+ * task này nữa.
+ */
+void TaskKeyRequest(void *pvParameters)
+{
+    xSemaphoreTake(keyRequestTrigger, portMAX_DELAY);
+
+    UART_Init();
+    LOG_PRINTLN("[CAR] Keyfob ket noi lan dau - bat dau xin key_root tu Gateway...");
+
+    for (;;)
+    {
+        if (RequestKeyRootFromGatewayOnce())
+        {
+            hasRealKey = true;
+            LOG_PRINTLN("[CAR] key_root da san sang (cached), dung retry.");
+            vTaskDelete(NULL);
+        }
+
+        LOG_PRINTF("[CAR] Se thu lai sau %lu ms...\n",
+                   (unsigned long)KEY_REQUEST_RETRY_DELAY_MS);
+        vTaskDelay(pdMS_TO_TICKS(KEY_REQUEST_RETRY_DELAY_MS));
+    }
+}
+
+/*=====================================================
+                    BLE Task
+=====================================================*/
+void PrintHex(const char* label, const uint8_t* data, size_t length) {
+    LOG_PRINTF("%s ", label);
+    for (size_t i = 0; i < length; i++) {
+        Serial.printf("%02X ", data[i]);
+    }
+    Serial.println();
+}
+
+void TaskBLE(void *pvParameters)
+{
+    if (!BLE_Car_Init())
+    {
+        LOG_PRINTLN("[BLE CAR] Init failed!");
+        vTaskDelete(NULL);
+    }
+
+    for (;;)
+    {
+        BLE_Car_Task();
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+/*=====================================================
+        HELPER: Sinh và gửi CHALLENGE
+=====================================================*/
+static void SendChallenge()
+{
+    LOG_PRINTLN("[CAR AUTH ] Generating challenge");
+
+    Packet txChallenge = {};
+    txChallenge.type = PKT_CHALLENGE;
+    txChallenge.length = 16;
+
+    esp_fill_random(savedNonce, 16);
+    memcpy(txChallenge.data, savedNonce, 16);
+    PrintHex("[CAR DEBUG] Nonce :", savedNonce, 16);
+
+    if (BLE_Car_SendPacket(txChallenge))
+    {
+        BLE_Car_SetState(CAR_CHALLENGE_SENT);
+        waitingForResponse = true;
+        challengeSendTime = millis();
+    }
+    else
+    {
+        LOG_PRINTLN("[CAR ERROR] Failed to send CHALLENGE");
+    }
+}
+
+/*=====================================================
+                Main Logic Task
+=====================================================*/
+void TaskLogic(void *pvParameters)
+{
+    Packet rxPacket;
+
+    for (;;)
+    {
+        while (xQueueReceive(
+                   bleRxQueue,
+                   &rxPacket,
+                   0) == pdTRUE)
+        {
+            switch (rxPacket.type)
+            {
+            case PKT_READY:
+            {
+                if (hasRealKey)
+                {
+                    // Đã có key (cache từ lần connect trước) - sinh
+                    // challenge ngay, không cần xin lại Gateway.
+                    SendChallenge();
+                }
+                else
+                {
+                    // Lần đầu tiên có Keyfob kết nối - kích hoạt
+                    // TaskKeyRequest bắt đầu xin key. Give idempotent
+                    // với binary semaphore - gọi nhiều lần (nếu có
+                    // nhiều READY tới trước khi key sẵn sàng) không
+                    // gây lỗi, chỉ "đánh thức" task đúng 1 lần.
+                    xSemaphoreGive(keyRequestTrigger);
+                    LOG_PRINTLN("[CAR] Keyfob da ket noi, dang cho key_root tu Gateway...");
+                }
+                break;
+            }
+
+            case PKT_RESPONSE:
+            {
+                waitingForResponse = false;
+
+                LOG_PRINTLN("[CAR AUTH ] Verifying HMAC");
+
+                if (rxPacket.length != 32)
+                {
+                    LOG_PRINTF("[CAR ERROR] Invalid RESPONSE length (%u)\n",
+                                  rxPacket.length);
+
+                    Packet tx = {};
+                    tx.type = PKT_AUTH_FAIL;
+                    tx.length = 0;
+                    BLE_Car_SendPacket(tx);
+
+                    BLE_Car_Disconnect();
+                    break;
+                }
+
+                PrintHex("[CAR DEBUG] Token :", rxPacket.data, 32);
+                bool isValid = Crypto_Verify_HMAC(rxPacket.data, savedNonce);
+
+                Packet tx = {};
+                tx.length = 0;
+
+                if (isValid)
+                {
+                    LOG_PRINTLN("[CAR AUTH ] SUCCESS");
+
+                    BLE_Car_SetState(CAR_AUTHENTICATED);
+
+                    tx.type = PKT_AUTH_OK;
+                    if (!BLE_Car_SendPacket(tx))
+                    {
+                        LOG_PRINTLN("[CAR ERROR] Failed to send AUTH_OK");
+                    }
+
+                    if (UWB_Init() && UWB_StartRanging())
+                    {
+                        LOG_PRINTLN("[CAR UWB  ] Ranging started");
+                    }
+                    else
+                    {
+                        LOG_PRINTLN("[CAR ERROR] UWB start failed");
+                    }
+                }
+                else
+                {
+                    LOG_PRINTLN("[CAR AUTH ] FAILED");
+
+                    tx.type = PKT_AUTH_FAIL;
+                    BLE_Car_SendPacket(tx);
+
+                    BLE_Car_Disconnect();
+                }
+                break;
+            }
+
+            default:
+                LOG_PRINTF("[CAR ERROR] Unknown packet: 0x%02X\n", rxPacket.type);
+                break;
+            }
+        }
+
+        // Key vừa sẵn sàng (lần đầu) trong lúc Keyfob vẫn đang đứng chờ
+        // ở CAR_KEY_RECEIVED - sinh challenge ngay, không cần Keyfob
+        // gửi lại READY.
+        if (hasRealKey && BLE_Car_GetState() == CAR_KEY_RECEIVED)
+        {
+            SendChallenge();
+        }
+
+        if (waitingForResponse &&
+            (millis() - challengeSendTime > BLE_TIMEOUT_MS))
+        {
+            LOG_PRINTLN("[CAR AUTH ] Response timeout");
+            waitingForResponse = false;
+            BLE_Car_Disconnect();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/*=====================================================
+                        Setup
+=====================================================*/
+void setup()
+{
+    Serial.begin(115200);
+    delay(1000);
+
+    Serial.println();
+    LOG_PRINTLN("===============================");
+    LOG_PRINTLN("      CAR ECU START");
+    LOG_PRINTLN("===============================");
+
+    if (!Queue_Init())
+    {
+        LOG_PRINTLN("[CAR ERROR] Queue init failed!");
+        while (1) delay(1000);
+    }
+
+    keyRequestTrigger = xSemaphoreCreateBinary();
+
+    xTaskCreatePinnedToCore(TaskBLE, "BLE", 4096, nullptr, 2, &TaskBLE_Handle, 0);
+    xTaskCreatePinnedToCore(TaskLogic, "Logic", 4096, nullptr, 1, &TaskLogic_Handle, 1);
+    xTaskCreatePinnedToCore(TaskKeyRequest, "KeyRequest", 4096, nullptr, 1, &TaskKeyRequest_Handle, 1);
+}
+
+void loop()
+{
+    vTaskDelete(NULL);
+}

@@ -1,0 +1,161 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x2b (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id da co: car_24
+[CAR NFC] Da nap 1 the tu whitelist (NVS)
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] San sang quet the (backup, khong can mang)...
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob da ket noi, dang cho key_root tu Gateway...
+[CAN DEBUG] TX_PIN=4 RX_PIN=5 MODE=NORMAL
+[CAN] TWAI initialized
+[CAR] Keyfob ket noi lan dau - bat dau xin key_root qua CAN...
+[ISOTP ERROR] Khong nhan duoc Flow Control
+[CAR ERROR] Gui KeyRequest qua CAN that bai
+[CAR] Gateway chua san sang, thu lai sau 5000 ms...
+[CAR] Da gui KeyRequest qua CAN, cho phan hoi tu Gateway...
+[CAR] Da nhan key_root (16 byte) tu Gateway qua CAN, da ap dung cho HMAC
+[CAR DEBUG] Key_root nhan duoc: 7F AD 3F 6F 10 C4 9B 92 38 FE 68 9E B9 83 49 7D 
+[CAR] key_root da san sang (cached), dung retry.
+[CAR AUTH ] Generating challenge
+[CAR DEBUG] Nonce : 78 CB 7F CA 68 05 20 5C 8B AD C7 E0 D4 13 17 13 
+[CAR TX   ] CHALLENGE
+[CAR RX   ] RESPONSE
+[CAR AUTH ] Verifying HMAC
+[CAR DEBUG] Token : 60 B8 8E EC 50 F0 43 B9 0E C4 8E 51 61 16 00 B2 44 75 63 8D E6 8E 70 6D 19 C7 35 67 A4 FD A9 65 
+[CAR AUTH ] SUCCESS
+[CAR TX   ] AUTH_OK
+[UWB MOCK] Init (no real hardware)
+[UWB MOCK] Ranging started
+[CAR UWB  ] Ranging started
+[UWB MOCK] distance=1.67 m
+[UWB MOCK] distance=1.40 m
+[UWB MOCK] distance=1.56 m
+[UWB MOCK] distance=1.70 m
+[UWB MOCK] distance=1.68 m
+[UWB MOCK] distance=1.53 m
+[UWB MOCK] distance=1.80 m
+[UWB MOCK] distance=1.58 m
+[UWB MOCK] distance=1.61 m
+[UWB MOCK] distance=1.49 m
+[UWB MOCK] distance=1.77 m
+[UWB MOCK] distance=1.45 m
+[UWB MOCK] distance=1.51 m
+[UWB MOCK] distance=1.50 m
+[UWB MOCK] distance=1.23 m
+[UWB MOCK] distance=1.66 m
+[UWB MOCK] distance=1.32 m
+[UWB MOCK] distance=1.71 m
+[UWB MOCK] distance=1.20 m
+[UWB MOCK] distance=1.34 m
+[UWB MOCK] distance=1.63 m
+[UWB MOCK] distance=1.67 m
+[UWB MOCK] distance=1.62 m
+[UWB MOCK] distance=1.57 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.50 m
+[UWB MOCK] distance=1.57 m
+[UWB MOCK] distance=1.21 m
+[UWB MOCK] distance=1.41 m
+[UWB MOCK] distance=1.49 m
+[UWB MOCK] distance=1.30 m
+[UWB MOCK] distance=1.65 m
+[UWB MOCK] distance=1.54 m
+[UWB MOCK] distance=1.55 m
+[UWB MOCK] distance=1.28 m
+[UWB MOCK] distance=1.28 m
+[UWB MOCK] distance=1.61 m
+[UWB MOCK] distance=1.62 m
+[UWB MOCK] distance=1.33 m
+[UWB MOCK] distance=1.21 m
+[UWB MOCK] distance=1.77 m
+[UWB MOCK] distance=1.28 m
+[UWB MOCK] distance=1.45 m
+[UWB MOCK] distance=1.48 m
+[UWB MOCK] distance=1.68 m
+[UWB MOCK] distance=1.50 m
+[UWB MOCK] distance=1.44 m
+[UWB MOCK] distance=1.43 m
+[UWB MOCK] distance=1.64 m
+[UWB MOCK] distance=1.23 m
+[UWB MOCK] distance=1.34 m
+[UWB MOCK] distance=1.57 m
+[UWB MOCK] distance=1.35 m
+[UWB MOCK] distance=1.51 m
+[UWB MOCK] distance=1.35 m
+[UWB MOCK] distance=1.53 m
+[UWB MOCK] distance=1.50 m
+[UWB MOCK] distance=1.26 m
+[UWB MOCK] distance=1.64 m
+[UWB MOCK] distance=1.45 m
+[UWB MOCK] distance=1.37 m
+[UWB MOCK] distance=1.34 m
+[UWB MOCK] distance=1.70 m
+[UWB MOCK] distance=1.43 m
+[UWB MOCK] distance=1.55 m
+[UWB MOCK] distance=1.25 m
+[UWB MOCK] distance=1.63 m
+[UWB MOCK] distance=1.54 m
+[UWB MOCK] distance=1.40 m
+[UWB MOCK] distance=1.61 m
+[UWB MOCK] distance=1.59 m
+[UWB MOCK] distance=1.57 m
+[UWB MOCK] distance=1.62 m
+[UWB MOCK] distance=1.61 m
+[UWB MOCK] distance=1.67 m
+[UWB MOCK] distance=1.67 m
+[UWB MOCK] distance=1.22 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.64 m
+[UWB MOCK] distance=1.42 m
+[UWB MOCK] distance=1.48 m
+[UWB MOCK] distance=1.50 m
+[UWB MOCK] distance=1.34 m
+[UWB MOCK] distance=1.64 m
+[UWB MOCK] distance=1.23 m
+[UWB MOCK] distance=1.25 m
+[UWB MOCK] distance=1.31 m
+[UWB MOCK] distance=1.30 m
+[UWB MOCK] distance=1.59 m
+[UWB MOCK] distance=1.46 m
+[UWB MOCK] distance=1.49 m
+[UWB MOCK] distance=1.57 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.41 m
+[UWB MOCK] distance=1.66 m
+[UWB MOCK] distance=1.69 m
+[UWB MOCK] distance=1.67 m
+[UWB MOCK] distance=1.38 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.66 m
+[UWB MOCK] distance=1.77 m
+[UWB MOCK] distance=1.78 m
+[UWB MOCK] distance=1.43 m
+[UWB MOCK] distance=1.74 m
+[UWB MOCK] distance=1.25 m
+[UWB MOCK] distance=1.59 m
+[UWB MOCK] distance=1.32 m
+[UWB MOCK] distance=1.29 m
+[UWB MOCK] distance=1.24 m
+[UWB MOCK] distance=1.49 m
+[UWB MOCK] distance=1.50 m
+[UWB MOCK] distance=1.75 m
+[UWB MOCK] distance=1.53 m
+[UWB MOCK] distance=1.27 m
+[UWB MOCK] distance=1.36 m
+[UWB MOCK] distance=1.52 m
+[UWB MOCK] distance=1.39 m

@@ -1,0 +1,53 @@
+
+===============================
+      CAR ECU START
+===============================
+[  1158][E][Preferences.cpp:483] getString(): nvs_get_str len fail: car_id NOT_FOUND
+[CAR PROVISION] CHUA CO car_id - cho lenh SET_CAR_ID:<value> qua Serial
+[CAR NFC] Da nap 6 the tu whitelist (NVS)
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] San sang quet the (backup, khong can mang)...
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob bao car_id="car_20" KHONG KHOP voi xe nay () - tu choi
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob bao car_id="car_20" KHONG KHOP voi xe nay () - tu choi
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob bao car_id="car_20" KHONG KHOP voi xe nay () - tu choi
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob bao car_id="car_20" KHONG KHOP voi xe nay () - tu choi
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob bao car_id="car_20" KHONG KHOP voi xe nay () - tu choi
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob bao car_id="car_20" KHONG KHOP voi xe nay () - tu choi
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob bao car_id="car_20" KHONG KHOP voi xe nay () - tu choi
+[CAR TX   ] AUTH_FAIL
+[CAR BLE  ] Disconnected - cooldown 3000 ms
+[CAR BLE  ] Advertising
+[CAR BLE  ] Connected

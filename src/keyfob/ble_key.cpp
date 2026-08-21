@@ -19,6 +19,15 @@ static NimBLEClient* pClient = nullptr;
 
 static NimBLERemoteCharacteristic* pRemoteTx = nullptr;
 static NimBLERemoteCharacteristic* pRemoteRx = nullptr;
+
+// car_id của chính Keyfob này (gán qua BLE_Key_SetOwnCarId lúc boot) -
+// gửi kèm trong gói READY để Car so khớp trước khi tiếp tục.
+static char s_ownCarId[16] = {0};
+
+// Khi true, onDisconnect() KHÔNG tự kích hoạt scan lại - dùng cho lỗi
+// vĩnh viễn (car_id sai), xem BLE_Key_HaltPermanently().
+static bool s_permanentlyHalted = false;
+
 /*=====================================================
                     NOTIFY CALLBACK
 =====================================================*/
@@ -43,36 +52,12 @@ static void NotifyCallback(
 
     memcpy(pkt.data, data + 2, len);
 
-    /*================ STATE UPDATE ================*/
-    Serial.printf("[KEY RX  ] %s\n",
+    LOG_PRINTF("[KEY RX  ] %s\n",
               PacketTypeToString(pkt.type));
-
-    switch (pkt.type)
-    {
-    case PKT_CHALLENGE:
-
-        keyState = KEY_CHALLENGE_RECEIVED;
-        break;
-
-    case PKT_AUTH_OK:
-
-        keyState = KEY_AUTHENTICATED;
-        //Serial.println("[KEY AUTH] Authentication SUCCESS");
-        break;
-
-    case PKT_AUTH_FAIL:
-
-        keyState = KEY_READY;
-        //Serial.println("[KEY AUTH] Authentication FAILED");
-        break;
-
-    default:
-        break;
-    }
 
     if (xQueueSend(bleRxQueue, &pkt, 0) != pdPASS)
     {
-        Serial.println("[KEY ERROR] RX queue full");
+        LOG_PRINTLN("[KEY ERROR] RX queue full");
     }
 }
 
@@ -86,21 +71,27 @@ class ClientCallbacks : public NimBLEClientCallbacks
     {
         connected = true;
         keyState = KEY_CONNECTED;
-
-        //Serial.println("[KEY BLE ] Connected");
     }
 
     void onDisconnect(NimBLEClient* client, int reason) override
     {
         if (connected)
         {
-            Serial.println("[KEY BLE ] Disconnected");
+            LOG_PRINTLN("[KEY BLE ] Disconnected");
         }
 
         connected = false;
-        //memset(&keyState, 0, sizeof(keyState));
         keyState = KEY_SCANNING;
-        doScan = true;
+
+        if (!s_permanentlyHalted)
+        {
+            doScan = true;
+        }
+        else
+        {
+            LOG_PRINTLN("[KEY BLE ] Đã dừng hoạt động do car_id sai. Không tự scan lại");
+        }
+
         pRemoteTx = nullptr;
         pRemoteRx = nullptr;
         pAdvertisedDevice = nullptr;
@@ -108,6 +99,7 @@ class ClientCallbacks : public NimBLEClientCallbacks
 };
 
 static ClientCallbacks clientCallbacks;
+
 /*=====================================================
                     SCAN CALLBACK
 =====================================================*/
@@ -127,7 +119,7 @@ class AdvertisedCallbacks : public NimBLEScanCallbacks
         if (rssi < BLE_CONNECT_RSSI_THRESHOLD)
             return;
 
-        Serial.printf("[KEY BLE ] Car found (RSSI=%d dBm)\n", rssi);
+        LOG_PRINTF("[KEY BLE ] Car found (RSSI=%d dBm)\n", rssi);
 
         NimBLEDevice::getScan()->stop();
 
@@ -145,10 +137,10 @@ static bool ConnectToCar()
 {
     if (pAdvertisedDevice == nullptr)
     {
-        Serial.println("[KEY ERROR] No advertising device");
+        LOG_PRINTLN("[KEY ERROR] No advertising device");
         return false;
     }
-    
+
     if (pClient == nullptr)
     {
         pClient = NimBLEDevice::createClient();
@@ -160,11 +152,11 @@ static bool ConnectToCar()
 
     if (!pClient->connect(pAdvertisedDevice))
     {
-        Serial.println("[KEY ERROR] Connection failed");
+        LOG_PRINTLN("[KEY ERROR] Connection failed");
         return false;
     }
 
-    Serial.printf("[KEY BLE ] Connected (MTU=%d)\n",
+    LOG_PRINTF("[KEY BLE ] Connected (MTU=%d)\n",
               pClient->getMTU());
 
     NimBLERemoteService* service =
@@ -172,26 +164,27 @@ static bool ConnectToCar()
 
     if (!service)
     {
-        Serial.println("[KEY ERROR] Service not found");
+        LOG_PRINTLN("[KEY ERROR] Service not found");
         pClient->disconnect();
         return false;
     }
 
-    Serial.println("[KEY BLE ] Service discovered");
+    LOG_PRINTLN("[KEY BLE ] Service discovered");
 
     pRemoteTx = service->getCharacteristic(CHARACTERISTIC_UUID_TX);
     pRemoteRx = service->getCharacteristic(CHARACTERISTIC_UUID_RX);
 
     if (!pRemoteTx || !pRemoteRx)
     {
-        Serial.println("[KEY BLE ] Characteristic not found");
+        LOG_PRINTLN("[KEY BLE ] Characteristic not found");
         pClient->disconnect();
         return false;
     }
-    Serial.println("[KEY BLE ] Characteristics discovered");
+    LOG_PRINTLN("[KEY BLE ] Characteristics discovered");
+
     if (!pRemoteTx->canNotify())
     {
-        Serial.println("[KEY ERROR] TX characteristic does not support Notify");
+        LOG_PRINTLN("[KEY ERROR] TX characteristic does not support Notify");
         pClient->disconnect();
         return false;
     }
@@ -200,27 +193,29 @@ static bool ConnectToCar()
 
     if (!ok)
     {
-        Serial.println("[KEY ERROR] Failed to enable notifications");
+        LOG_PRINTLN("[KEY ERROR] Failed to enable notifications");
         pClient->disconnect();
         return false;
     }
 
-    Serial.println("[KEY BLE ] Notifications enabled");
+    LOG_PRINTLN("[KEY BLE ] Notifications enabled");
 
+    // Gửi READY kèm car_id của chính Keyfob này - Car sẽ so khớp
+    // trước khi tiếp tục (xem car/main.cpp case PKT_READY).
     Packet pkt = {};
     pkt.type = PKT_READY;
-    pkt.length = 0;
+    pkt.length = (uint8_t)strlen(s_ownCarId);
+    memcpy(pkt.data, s_ownCarId, pkt.length);
 
     if (!BLE_Key_SendPacket(pkt))
     {
-        Serial.println("[KEY ERROR] Failed to send READY");
+        LOG_PRINTLN("[KEY ERROR] Failed to send READY");
         pClient->disconnect();
         return false;
     }
 
     keyState = KEY_READY;
 
-    //Serial.println("[BLE KEY] READY sent");
     return true;
 }
 
@@ -241,7 +236,7 @@ bool BLE_Key_Init()
 
     keyState = KEY_SCANNING;
 
-    Serial.println("[KEY BLE ] Scanning...");
+    LOG_PRINTLN("[KEY BLE ] Scanning...");
     return true;
 }
 
@@ -255,11 +250,11 @@ void BLE_Key_Task()
     {
         if (ConnectToCar())
         {
-            Serial.println("[KEY AUTH] Waiting for challenge...");
+            LOG_PRINTLN("[KEY AUTH] Waiting for challenge...");
         }
         else
         {
-            Serial.println("[KEY ERROR] Connection failed");
+            LOG_PRINTLN("[KEY ERROR] Connection failed");
             doScan = true;
         }
 
@@ -273,23 +268,6 @@ void BLE_Key_Task()
         NimBLEDevice::getScan()->start(0, false);
         doScan = false;
     }
-    static uint32_t lastRssiLog = 0;
-    
-    // if (connected && pClient != nullptr)
-    // {
-    //     if (millis() - lastRssiLog > 5000) 
-    //     {
-    //         lastRssiLog = millis();
-    //         int currentRssi = pClient->getRssi();
-            
-    //         Serial.printf("[BLE] Cường độ sóng (RSSI) = %d dBm\n", currentRssi);
-
-    //         // Bạn có thể thêm logic mô phỏng ngắt kết nối nếu đi quá xa
-    //         // if (currentRssi < -85) {
-    //         //     Serial.println("[WARNING] Bạn đang ra khỏi vùng phủ sóng!");
-    //         // }
-    //     }
-    // }
 }
 
 /*=====================================================
@@ -299,6 +277,55 @@ void BLE_Key_Task()
 bool BLE_Key_IsConnected()
 {
     return connected;
+}
+
+/*=====================================================
+                    DISCONNECT
+=====================================================*/
+
+bool BLE_Key_Disconnect()
+{
+    if (!connected || pClient == nullptr)
+        return false;
+
+    pClient->disconnect();
+    return true;
+}
+
+/*=====================================================
+                    STATE ACCESSORS
+=====================================================*/
+
+void BLE_Key_SetState(KeyState newState)
+{
+    keyState = newState;
+}
+
+KeyState BLE_Key_GetState()
+{
+    return keyState;
+}
+
+void BLE_Key_SetOwnCarId(const char* carId)
+{
+    strncpy(s_ownCarId, carId, sizeof(s_ownCarId) - 1);
+}
+
+void BLE_Key_HaltPermanently()
+{
+    s_permanentlyHalted = true;
+
+    if (connected && pClient != nullptr)
+    {
+        pClient->disconnect(); // onDisconnect() sẽ tự thấy cờ này, không scan lại
+    }
+    else
+    {
+        NimBLEDevice::getScan()->stop();
+        doScan = false;
+    }
+
+    //LOG_PRINTLN("[KEY BLE ] HALT vĩnh viễn - car_id không khớp, kiểm tra lại provisioning");
 }
 
 /*=====================================================
@@ -314,7 +341,7 @@ bool BLE_Key_SendPacket(const Packet& pkt)
     {
         if (keyState != KEY_CHALLENGE_RECEIVED)
         {
-            Serial.println("[KEY ERROR] Challenge not received");
+            LOG_PRINTLN("[KEY ERROR] Challenge not received");
             return false;
         }
     }
@@ -344,13 +371,8 @@ bool BLE_Key_SendPacket(const Packet& pkt)
         buffer,
         pkt.length + 2,
         false);
-    
-    if (ok && pkt.type == PKT_RESPONSE)
-    {
-        //keyState = KEY_READY;
-    }
 
-    Serial.printf("[KEY TX  ] %s %s\n",
+    LOG_PRINTF("[KEY TX  ] %s %s\n",
               PacketTypeToString(pkt.type),
               ok ? "OK" : "FAILED");
 

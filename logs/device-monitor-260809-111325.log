@@ -1,0 +1,50 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+
+===============================
+      CAR ECU START
+===============================
+[CAR PROVISION] car_id đã có: car_29
+[CAR NFC] Đã nạp 1 thẻ từ whitelist
+[CAR BLE  ] Advertising
+[NFC] RC522 initialized
+[CAR NFC] Sẵn sàng quét thẻ...
+[CAR BLE  ] Connected
+[CAR RX   ] READY
+[CAR] Keyfob đã kết nối, đang chờ key_root từ Gateway...
+[CAN DEBUG] TX_PIN=4 RX_PIN=5 MODE=NORMAL
+[CAN] TWAI initialized
+[CAR] Keyfob kết nối lần đầu - bắt đầu xin key_root qua CAN...
+[CAR] Đã gửi yêu cầu xin key_root qua CAN, chờ phản hồi từ Gateway...
+[CAR] Đã nhận key_root (16 byte) từ Gateway qua CAN, đã áp dụng cho HMAC
+[CAR DEBUG] Key_root nhận được: C3 53 CD A8 C0 17 83 5F F7 DF 33 1C 7C 8A CC D5 
+[CAR] key_root đã sẵn sàng, dừng retry.
+[CAR AUTH ] Generating challenge
+[CAR DEBUG] Nonce : 05 B9 CF 01 F7 D5 07 15 35 3A 84 06 50 82 4D 0B 
+[CAR TX   ] CHALLENGE
+[CAR RX   ] RESPONSE
+[CAR AUTH ] Verifying HMAC
+[CAR DEBUG] Token : 4E E2 8B 84 8C D6 07 4A ED 3D 2B 3C 18 2D 47 D9 2B B8 DB A7 D6 7B F4 B6 32 C9 9B E7 36 0A 4D FE 
+[CAR AUTH ] SUCCESS
+[CAR TX   ] AUTH_OK
+[UWB MOCK] Init (no real hardware)
+[UWB MOCK] Ranging started
+[CAR UWB  ] Ranging started
+[UWB MOCK] distance=1.48 m
+[UWB MOCK] distance=1.29 m
+[UWB MOCK] distance=1.46 m
+[UWB MOCK] distance=1.42 m
+[UWB MOCK] distance=1.48 m
+[UWB MOCK] distance=1.67 m
+[UWB MOCK] distance=1.57 m
+[UWB MOCK] distance=1.36 m
+[UWB MOCK] distance=1.49 m
+[UWB MOCK] distance=1.64 m
+[UWB MOCK] distance=1.69 m
