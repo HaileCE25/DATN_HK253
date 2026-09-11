@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Factory Tool - Provisioning</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-100 min-h-screen flex items-center justify-center p-6">
+
+    <div class="max-w-4xl w-full bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col md:flex-row">
+        
+        <div class="w-full md:w-1/2 p-8 border-r border-gray-100">
+            <div class="flex items-center gap-3 mb-6">
+                <div class="bg-blue-600 p-2 rounded-lg">
+                    <i data-lucide="wrench" class="text-white"></i>
+                </div>
+                <div>
+                    <h2 class="text-xl font-bold text-gray-900">Thêm Phương Tiện Mới</h2>
+                    <p class="text-sm text-gray-500">Đẩy thông tin xe lên Firebase Database</p>
+                </div>
+            </div>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="mb-4 p-4 rounded-lg text-sm font-medium {% if category == 'success' %}bg-green-100 text-green-700 border border-green-200{% else %}bg-red-100 text-red-700 border border-red-200{% endif %}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            <form action="/add_vehicle" method="POST" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1">Mã định danh xe (Car ID)</label>
+                    <input type="text" name="car_id" required placeholder="VD: Car_02, Car_03..." 
+                           class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1">Biển số xe</label>
+                    <input type="text" name="license_plate" required placeholder="VD: 51H-123.45" 
+                           class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1">Dòng xe (Model)</label>
+                    <input type="text" name="car_model" required placeholder="VD: VinFast VF8" 
+                           class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <!-- HÀNG CHIA ĐÔI: SỐ CHỖ NGỒI VÀ MÀU SẮC -->
+                <div class="flex gap-4 mb-4">
+                    <div class="flex-1">
+                        <label class="block text-sm font-semibold text-gray-700 mb-1">Số chỗ ngồi</label>
+                        <select name="seats" class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <option value="4">4 chỗ</option>
+                            <option value="5" selected>5 chỗ</option>
+                            <option value="7">7 chỗ</option>
+                            <option value="9">9 chỗ</option>
+                        </select>
+                    </div>
+                    <div class="flex-1">
+                        <label class="block text-sm font-semibold text-gray-700 mb-2">
+                            Màu sơn <span id="colorLabel" class="text-xs font-normal text-blue-600 ml-1">(Trắng)</span>
+                        </label>
+                        <input type="hidden" name="color" id="selectedColor" value="Trắng">
+                        
+                        <!-- CHỖ CHỨA KEY_ROOT ĐỂ GỬI LÊN PYTHON -->
+                        <input type="hidden" name="key_root" id="generatedKey" value="">
+
+                        <div class="flex items-center gap-3 mt-1">
+                            <button type="button" onclick="selectColor('Trắng', this)" class="color-swatch w-8 h-8 rounded-full border border-gray-300 ring-2 ring-offset-2 ring-blue-500 transition-all shadow-sm" style="background-color: #f8fafc;" title="Trắng"></button>
+                            <button type="button" onclick="selectColor('Đen', this)" class="color-swatch w-8 h-8 rounded-full border border-gray-300 hover:scale-110 transition-all shadow-sm" style="background-color: #0f172a;" title="Đen"></button>
+                            <button type="button" onclick="selectColor('Đỏ', this)" class="color-swatch w-8 h-8 rounded-full border border-gray-300 hover:scale-110 transition-all shadow-sm" style="background-color: #ef4444;" title="Đỏ"></button>
+                            <button type="button" onclick="selectColor('Bạc', this)" class="color-swatch w-8 h-8 rounded-full border border-gray-300 hover:scale-110 transition-all shadow-sm" style="background-color: #94a3b8;" title="Bạc"></button>
+                            <button type="button" onclick="selectColor('Xanh', this)" class="color-swatch w-8 h-8 rounded-full border border-gray-300 hover:scale-110 transition-all shadow-sm" style="background-color: #3b82f6;" title="Xanh"></button>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="button" onclick="handleUSBProvisioning()" class="w-full py-3 mt-4 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-colors shadow-lg shadow-blue-600/30 flex justify-center items-center gap-2">
+                    <i data-lucide="usb" class="w-5 h-5"></i> Cấp phát Key qua cáp USB
+                </button>
+            </form>
+
+            <!-- ============ KHU VỰC GỘP: NẠP CHO XE (car_id) + NFC (whitelist + booking) ============ -->
+            <div class="mt-8 pt-6 border-t border-gray-200">
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="bg-orange-500 p-2 rounded-lg">
+                        <i data-lucide="credit-card" class="text-white"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-bold text-gray-900">Cấp thẻ NFC</h2>
+                        <p class="text-xs text-gray-500">Gửi lệnh trực tiếp tới Car qua cáp USB - không qua Firebase</p>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-sm font-semibold text-gray-700 mb-1">Mã định danh xe (Car ID)</label>
+                        <input type="text" id="nfcCarIdInput" placeholder="VD: car_21"
+                               class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-500">
+                    </div>
+
+                    <button type="button" onclick="handleProvisionCarAndNfc()" class="w-full py-3 bg-orange-500 text-white font-bold rounded-xl hover:bg-orange-600 transition-colors shadow-lg shadow-orange-500/30 flex justify-center items-center gap-2">
+                        <i data-lucide="scan" class="w-5 h-5"></i> Nạp mã xe &amp; nạp UID của thẻ NFC
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="w-full md:w-1/2 bg-slate-50 p-8 flex flex-col h-[600px]">
+            <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">Xe đã có trên Database</h3>
+            
+            <div class="flex-1 overflow-y-auto space-y-3 pr-2">
+                {% if vehicles %}
+                    {% for car_id, car_data in vehicles.items() %}
+                        <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm group hover:border-blue-300 transition-colors">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="p-2 bg-teal-100 text-teal-600 rounded-full group-hover:bg-blue-100 group-hover:text-blue-600 transition-colors">
+                                        <i data-lucide="car" class="w-5 h-5"></i>
+                                    </div>
+                                    <div>
+                                        <p class="font-bold text-gray-900 flex items-center gap-2">
+                                            {{ car_id }}
+                                            {% if car_data.provisioned_status == 'Ready' %}
+                                                <i data-lucide="key" class="w-3.5 h-3.5 text-orange-500" title="Đã nạp Key"></i>
+                                            {% endif %}
+                                        </p>
+                                        <p class="text-xs text-gray-500 mt-1">
+                                            {{ car_data.license_plate }} • {{ car_data.car_model }}<br/>
+                                            <span class="font-medium text-blue-600">{{ car_data.seats|default('5') }} chỗ</span> • Màu {{ car_data.color|default('Không rõ') }}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div class="text-right flex flex-col items-end gap-1">
+                                    <span class="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-bold rounded uppercase border border-green-200">
+                                        {{ car_data.status | default('UNKNOWN') }}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- ===== Danh sách thẻ NFC của xe này ===== -->
+                            <div class="mt-3 pt-3 border-t border-gray-100">
+                                <p class="text-[11px] font-semibold text-gray-400 uppercase mb-1.5 flex items-center gap-1">
+                                    <i data-lucide="credit-card" class="w-3 h-3"></i> Thẻ NFC dự phòng
+                                </p>
+                                {% if nfc_whitelist.get(car_id) %}
+                                    <div class="flex flex-wrap gap-1.5">
+                                        {% for uid in nfc_whitelist[car_id].keys() %}
+                                            <span class="inline-flex items-center gap-1 bg-orange-50 text-orange-700 border border-orange-200 rounded-full px-2 py-0.5 text-[11px] font-mono">
+                                                {{ uid }}
+                                                <button type="button" onclick="handleNFCDelete('{{ car_id }}', '{{ uid }}')" class="text-orange-400 hover:text-red-600" title="Xoá thẻ này">
+                                                    <i data-lucide="x" class="w-3 h-3"></i>
+                                                </button>
+                                            </span>
+                                        {% endfor %}
+                                    </div>
+                                {% else %}
+                                    <p class="text-[11px] text-gray-300 italic">Chưa có thẻ nào</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <p class="text-center text-gray-400 text-sm italic mt-10">Chưa có phương tiện nào.</p>
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        lucide.createIcons();
+
+        function selectColor(colorName, btnElement) {
+            document.getElementById('selectedColor').value = colorName;
+            
+            document.getElementById('colorLabel').textContent = '(' + colorName + ')';
+            
+            const swatches = document.querySelectorAll('.color-swatch');
+            swatches.forEach(swatch => {
+                swatch.classList.remove('ring-2', 'ring-offset-2', 'ring-blue-500');
+            });
+            
+            btnElement.classList.add('ring-2', 'ring-offset-2', 'ring-blue-500');
+        }
+
+        // HÀM NẠP CAR_ID CHO BOARD CAR - khác hoàn toàn với
+        // HÀM GỘP: NẠP CAR_ID + THÊM THẺ NFC + GHI BOOKING_ID (nếu có) -
+        // TẤT CẢ TRONG 1 PHIÊN KẾT NỐI USB DUY NHẤT tới board Car.
+        // KHÔNG gọi Firebase cho car_id (không tạo dữ liệu mới), nhưng
+        // CÓ gọi Firebase để đồng bộ UID vào NfcWhitelist sau khi Car
+        // xác nhận thành công (đúng nguyên tắc: NVS trước, Firebase sau).
+        async function handleProvisionCarAndNfc() {
+            if (!("serial" in navigator)) {
+                alert("Trình duyệt của bạn không hỗ trợ kết nối USB (Web Serial). Vui lòng dùng Google Chrome hoặc Microsoft Edge.");
+                return;
+            }
+
+            const carId = document.getElementById('nfcCarIdInput').value.trim();
+            if (!carId) {
+                alert("Vui lòng nhập Mã định danh xe (Car ID) ở khu vực này trước.");
+                return;
+            }
+
+            let port;
+            let reader;
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+
+                const textDecoder = new TextDecoderStream();
+                const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+                reader = textDecoder.readable.getReader();
+
+                const textEncoder = new TextEncoderStream();
+                const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+                const writer = textEncoder.writable.getWriter();
+
+                console.log("Đợi board Car ổn định...");
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                // BƯỚC 1: SET_CAR_ID (không restart board - phiên Serial
+                // vẫn mở để nối tiếp các bước sau)
+                await writer.write(`SET_CAR_ID:${carId}\n`);
+                let response = await readResponseWithTimeout(reader, 8000);
+                console.log("SET_CAR_ID phản hồi: ", response);
+
+                if (!response.includes("SUCCESS")) {
+                    throw new Error("Bước 1 (SET_CAR_ID) thất bại: " + response);
+                }
+
+                // BƯỚC 2: chờ quẹt thẻ NFC
+                alert(`Bấm OK rồi quẹt thẻ NFC trong vòng 10 giây tới.`);
+
+                const detectedUid = await waitForUidDetected(reader, 10000);
+                if (!detectedUid) {
+                    throw new Error("Không phát hiện thẻ nào được quét trong 10 giây.");
+                }
+
+                console.log("UID phát hiện: ", detectedUid);
+
+                // BƯỚC 3: NFC_ADD
+                await writer.write(`NFC_ADD:${detectedUid}\n`);
+                response = await readResponseWithTimeout(reader, 5000);
+                console.log("NFC_ADD phản hồi: ", response);
+
+                if (!response.includes("SUCCESS")) {
+                    // Lấy đúng dòng ERROR cuối cùng - bỏ qua log nền
+                    // (TaskNFC quét độc lập có thể chen vào buffer cùng
+                    // lúc, gây nhiễu nếu hiển thị nguyên văn).
+                    const errorMatch = response.match(/ERROR:[^\r\n]*/);
+                    const cleanError = errorMatch ? errorMatch[0] : response;
+                    throw new Error("Nạp thẻ NFC thất bại: " + cleanError);
+                }
+
+                await writer.close();
+                await writableStreamClosed;
+
+                // Sau khi Car xác nhận hết - đồng bộ UID lên Firebase
+                // (car_id không cần đồng bộ, không tạo dữ liệu mới).
+                try {
+                    const fbResp = await fetch('/add_nfc_uid', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ car_id: carId, uid: detectedUid })
+                    });
+                    const fbData = await fbResp.json();
+                    if (!fbData.success) {
+                        alert("Đã nạp Car và thẻ NFC thành công, nhưng lỗI khi đồng bộ Firebase: " + fbData.error);
+                        return;
+                    }
+                } catch (fbErr) {
+                    alert("Đã nạp Car và thẻ NFC thành công, nhưng lỗi khi gọi server đồng bộ Firebase: " + fbErr.message);
+                    return;
+                }
+
+                alert(`Hoàn tất!\n- car_id: ${carId}\n- Thẻ NFC: ${detectedUid}`);
+                window.location.reload();
+
+            } catch (error) {
+                console.error("Lỗi wizard cấp thẻ NFC:", error);
+                alert("Lỗi: " + error.message);
+            } finally {
+                if (reader) {
+                    try { reader.releaseLock(); } catch (e) {}
+                }
+                if (port) {
+                    try {
+                        await port.close();
+                    } catch (closeErr) {
+                        console.warn("Không đóng được port:", closeErr);
+                    }
+                }
+            }
+        }
+
+        // HÀM GIAO TIẾP VỚI ESP32 QUA CÁP USB (WEB SERIAL API)
+        //
+        // Quan trọng: hàm này giờ ĐỌC phản hồi thật từ Keyfob
+        // (SUCCESS / ERROR:...) trước khi báo thành công, thay vì chỉ
+        // giả định thành công ngay sau khi ghi xong byte lên cổng USB.
+        // Trước đây web luôn báo "thành công" dù Keyfob có thể đã
+        // reject (JSON sai, thiếu field...) - không có cách nào biết.
+        async function handleUSBProvisioning() {
+            if (!("serial" in navigator)) {
+                alert("Trình duyệt của bạn không hỗ trợ kết nối USB (Web Serial). Vui lòng dùng Google Chrome hoặc Microsoft Edge.");
+                return;
+            }
+
+            const randomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+
+            document.getElementById('generatedKey').value = randomKey;
+
+            const carId = document.querySelector('input[name="car_id"]').value.trim();
+            const licensePlate = document.querySelector('input[name="license_plate"]').value.trim();
+            const carModel = document.querySelector('input[name="car_model"]').value.trim();
+
+            if (!carId) {
+                alert("Vui lòng nhập Mã định danh xe (Car ID) trước khi cấp phát Key.");
+                return;
+            }
+
+            const jsonPayload = JSON.stringify({
+                car_id: carId,
+                license_plate: licensePlate,
+                car_model: carModel,
+                key_root: randomKey
+            });
+            const payload = `PROVISION:${jsonPayload}\n`;
+
+            let port;
+            let reader;
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+
+                // SỬA: bỏ waitForMarker() (chờ "KEYFOB START") - giả định
+                // "port.open() luôn reset board" chỉ đúng với board dùng
+                // chip cầu USB-UART rời (DTR/RTS reset), KHÔNG áp dụng
+                // chắc chắn cho board dùng USB-CDC gốc như ESP32-C3
+                // (Keyfob). Nếu board không reset (đã chạy sẵn, đang chờ
+                // ở TaskProvisioning), "KEYFOB START" không bao giờ xuất
+                // hiện lại -> timeout giả dù board hoàn toàn bình thường.
+                // Thay bằng: đợi ngắn cố định (đủ cho TRƯỜNG HỢP CÓ reset
+                // xảy ra kịp boot xong), rồi gửi lệnh luôn.
+                const textDecoder = new TextDecoderStream();
+                const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+                reader = textDecoder.readable.getReader();
+
+                console.log("Đợi board ổn định...");
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                const textEncoder = new TextEncoderStream();
+                const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+                const writer = textEncoder.writable.getWriter();
+
+                console.log("Đang truyền dữ liệu qua USB: ", payload);
+                await writer.write(payload);
+                await writer.close();
+                await writableStreamClosed;
+
+                const response = await readResponseWithTimeout(reader, 8000);
+                console.log("Phản hồi từ Keyfob: ", response);
+
+                if (response.includes("SUCCESS")) {
+                    alert("Đã nạp Key xuống ESP32 thành công! \nBắt đầu lưu thông tin lên Cloud...");
+                    document.querySelector('form').submit();
+                } else if (response.includes("ERROR:")) {
+                    alert("Keyfob từ chối dữ liệu: " + response);
+                } else {
+                    alert("Không nhận được phản hồi rõ ràng từ Keyfob sau khi gửi. \nDữ liệu nhận được: " + response);
+                }
+
+            } catch (error) {
+                console.error("Lỗi giao tiếp USB:", error);
+                alert("Có lỗi khi kết nối USB: " + error.message);
+            } finally {
+                if (reader) {
+                    try { reader.releaseLock(); } catch (e) {}
+                }
+                if (port) {
+                    try {
+                        await port.close();
+                    } catch (closeErr) {
+                        console.warn("Không đóng được port:", closeErr);
+                    }
+                }
+            }
+        }
+
+        // Đọc từng dòng cho tới khi thấy "SUCCESS" hoặc "ERROR:", hoặc
+        // hết timeout (ms).
+        async function readResponseWithTimeout(reader, timeoutMs) {
+            let buffer = "";
+            const deadline = Date.now() + timeoutMs;
+
+            while (Date.now() < deadline) {
+                const remaining = deadline - Date.now();
+                const { value, done } = await Promise.race([
+                    reader.read(),
+                    new Promise((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), remaining))
+                ]);
+
+                if (done) break;
+                if (value) {
+                    buffer += value;
+                    if (buffer.includes("SUCCESS") || buffer.includes("ERROR:")) {
+                        return buffer.trim();
+                    }
+                }
+            }
+
+            return buffer.trim();
+        }
+        // Đọc cho tới khi thấy dòng "CAR_ID:<value>", trả về car_id
+        // (string) hoặc null nếu hết timeout không thấy.
+        async function readCarIdWithTimeout(reader, timeoutMs) {
+            let buffer = "";
+            const deadline = Date.now() + timeoutMs;
+
+            while (Date.now() < deadline) {
+                const remaining = deadline - Date.now();
+                const { value, done } = await Promise.race([
+                    reader.read(),
+                    new Promise((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), remaining))
+                ]);
+
+                if (done) break;
+                if (value) {
+                    buffer += value;
+                    const idx = buffer.indexOf("CAR_ID:");
+                    if (idx !== -1) {
+                        const rest = buffer.substring(idx + "CAR_ID:".length);
+                        const newlineIdx = rest.indexOf("\n");
+                        if (newlineIdx !== -1) {
+                            return rest.substring(0, newlineIdx).trim();
+                        }
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        // XOÁ 1 THẺ NFC - cần cắm Car qua USB (NVS là bản "thật", chỉ
+        // sửa được khi có kết nối vật lý), sau khi Car xác nhận xoá
+        // thành công mới xoá tiếp trên Firebase.
+        async function handleNFCDelete(carId, uid) {
+            if (!("serial" in navigator)) {
+                alert("Trình duyệt của bạn không hỗ trợ kết nối USB (Web Serial). Vui lòng dùng Google Chrome hoặc Microsoft Edge.");
+                return;
+            }
+
+            if (!confirm(`Xoá thẻ ${uid} khỏi xe ${carId}?\nCần cắm Car qua USB để xác nhận.`)) {
+                return;
+            }
+
+            let port;
+            let reader;
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+
+                const textDecoder = new TextDecoderStream();
+                const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+                reader = textDecoder.readable.getReader();
+
+                console.log("Đợi board ổn định...");
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                const textEncoder = new TextEncoderStream();
+                const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+                const writer = textEncoder.writable.getWriter();
+
+                // Xác nhận board đang cắm ĐÚNG LÀ xe ghi trên Firebase -
+                // tránh xoá nhầm trên board khác (có thể do nhãn cũ bị
+                // ghi sai từ trước khi có bước xác nhận car_id thật).
+                await writer.write("GET_CAR_ID\n");
+                const realCarId = await readCarIdWithTimeout(reader, 5000);
+
+                if (!realCarId) {
+                    alert("Không xác định được car_id thật của board đang cắm.");
+                    return;
+                }
+
+                if (realCarId !== carId) {
+                    alert(`CẢNH BÁO: Board đang cắm là xe "${realCarId}", không phải "${carId}" như ghi trên Firebase.\nHuỷ thao tác để tránh xoá nhầm - vui lòng cắm đúng board.`);
+                    return;
+                }
+
+                const payload = `NFC_DEL:${uid}\n`;
+                console.log("Đang gửi lệnh xoá NFC tới Car: ", payload);
+                await writer.write(payload);
+                await writer.close();
+                await writableStreamClosed;
+
+                const response = await readResponseWithTimeout(reader, 5000);
+                console.log("Phản hồi từ Car: ", response);
+
+                if (response.includes("SUCCESS")) {
+                    try {
+                        const fbResp = await fetch('/remove_nfc_uid', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({ car_id: carId, uid: uid })
+                        });
+                        const fbData = await fbResp.json();
+                        if (!fbData.success) {
+                            alert("Đã xoá khỏi Car nhưng lỗi khi đồng bộ Firebase: " + fbData.error);
+                            return;
+                        }
+                    } catch (fbErr) {
+                        alert("Đã xoá khỏi Car nhưng lỗi khi gọi server để đồng bộ Firebase: " + fbErr.message);
+                        return;
+                    }
+
+                    alert("Đã xoá thẻ " + uid + " khỏi Car VÀ Firebase!");
+                    window.location.reload();
+                } else if (response.includes("ERROR:")) {
+                    alert("Car TỪ CHỐI: " + response);
+                } else {
+                    alert("Không nhận được phản hồi rõ ràng từ Car. \nDữ liệu nhận được: " + response);
+                }
+
+            } catch (error) {
+                console.error("Lỗi giao tiếp USB:", error);
+                alert("Có lỗi khi kết nối USB: " + error.message);
+            } finally {
+                if (reader) {
+                    try { reader.releaseLock(); } catch (e) {}
+                }
+                if (port) {
+                    try {
+                        await port.close();
+                    } catch (closeErr) {
+                        console.warn("Không đóng được port:", closeErr);
+                    }
+                }
+            }
+        }
+
+        // Đọc cho tới khi thấy dòng "UID_DETECTED:<uid>", trả về UID
+        // (string) hoặc null nếu hết timeout không thấy.
+        async function waitForUidDetected(reader, timeoutMs) {
+            let buffer = "";
+            const deadline = Date.now() + timeoutMs;
+
+            while (Date.now() < deadline) {
+                const remaining = deadline - Date.now();
+                const { value, done } = await Promise.race([
+                    reader.read(),
+                    new Promise((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), remaining))
+                ]);
+
+                if (done) break;
+                if (value) {
+                    buffer += value;
+                    const idx = buffer.indexOf("UID_DETECTED:");
+                    if (idx !== -1) {
+                        const rest = buffer.substring(idx + "UID_DETECTED:".length);
+                        const newlineIdx = rest.indexOf("\n");
+                        if (newlineIdx !== -1) {
+                            return rest.substring(0, newlineIdx).trim();
+                        }
+                    }
+                }
+            }
+
+            return null;
+        }
+
+    </script>
+</body>
+</html>

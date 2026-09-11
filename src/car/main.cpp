@@ -1,0 +1,985 @@
+#include <Arduino.h>
+#include <Preferences.h>
+#include "protocol/packet.h"
+#include "car/ble_car.h"
+#include "os/queue.h"
+#include "crypto/hmac.h"
+#include "can/twai_driver.h"
+#include "can/isotp.h"
+#include "can/payloads.h"
+#include "can/can_ids.h"
+#include "uwb/uwb_hal.h"
+#include "nfc/rfid_hal.h"
+
+/*=====================================================
+            TRẠNG THÁI FSM MỞ KHÓA
+=====================================================*/
+typedef enum
+{
+    FSM_IDLE,           // Chờ auth
+    FSM_AUTH,           // Đang auth BLE (chưa xong)
+    FSM_TRACKING,       // Auth OK, đang theo dõi khoảng cách UWB
+    FSM_UNLOCK_WINDOW,  // Đã gần đủ lâu, chuẩn bị mở
+    FSM_UNLOCKED,       // Đã mở khóa
+    FSM_COOLDOWN,       // Vừa relock, tạm không cho mở lại ngay
+} CarFsmState_t;
+
+/*=====================================================
+            NGƯỠNG UWB & FAIL-SAFE
+=====================================================*/
+constexpr float     UWB_R_UNLOCK      = 0.8f;    // m — vào gần hơn mức này → mở
+constexpr float     UWB_R_LOCK        = 1.5f;    // m — ra xa hơn mức này → relock
+constexpr uint32_t  UWB_T_STABLE_MS   = 3000;    // ms — phải ở trong R_UNLOCK liên tục
+constexpr uint8_t   UWB_M_RELOCK      = 5;       // mẫu liên tiếp > R_LOCK → relock
+constexpr uint32_t  BLE_FAILSAFE_MS   = 5000;    // ms — mất BLE lâu hơn → relock
+constexpr uint32_t  FSM_COOLDOWN_MS   = 5000;    // ms — cooldown sau relock
+
+/*=====================================================
+            GLOBALS
+=====================================================*/
+Preferences carPreferences;
+String g_carId;
+
+static void LoadCarId()
+{
+    g_carId = carPreferences.getString("car_id", "");
+}
+
+static void SaveCarId(const String& carId)
+{
+    carPreferences.putString("car_id", carId);
+    g_carId = carId;
+}
+
+constexpr uint32_t KEY_REQUEST_RETRY_DELAY_MS = 5000;
+
+void PrintHex(const char* label, const uint8_t* data, size_t length);
+constexpr uint32_t ISOTP_TIMEOUT_MS = 2000;
+constexpr uint32_t NFC_DEBOUNCE_MS = 3000;
+
+TaskHandle_t TaskBLE_Handle          = nullptr;
+TaskHandle_t TaskLogic_Handle        = nullptr;
+TaskHandle_t TaskKeyRequest_Handle   = nullptr;
+TaskHandle_t TaskNFC_Handle          = nullptr;
+TaskHandle_t TaskNFCProvisioning_Handle = nullptr;
+TaskHandle_t TaskUnlock_Handle       = nullptr;
+
+static uint8_t savedNonce[16];
+static bool waitingForResponse = false;
+static uint32_t challengeSendTime = 0;
+static volatile bool hasRealKey = false;
+static SemaphoreHandle_t keyRequestTrigger;
+
+// K_session tính từ HKDF(key_root, nonce) sau khi auth thành công
+static uint8_t  g_kSession[16];
+static bool     g_kSessionReady = false;
+
+// FSM và BLE fail-safe
+static volatile CarFsmState_t g_fsmState  = FSM_IDLE;
+static volatile uint32_t      g_lastBleMs = 0;  // millis() lần cuối có contact BLE
+
+/*=====================================================
+    GỬI LỆNH ACTUATOR QUA CAN
+=====================================================*/
+static void SendActuatorCmd(uint8_t cmd)
+{
+    if (!ISOTP_Send(CAN_ID_ACTUATOR_CMD, &cmd, 1, ISOTP_TIMEOUT_MS))
+    {
+        LOG_PRINTF("[CAR ERROR] Gửi ActuatorCmd 0x%02X qua CAN thất bại\n", cmd);
+    }
+}
+
+/*=====================================================
+    NFC WHITELIST (backup unlock khi không có mạng/BLE)
+=====================================================*/
+constexpr uint8_t NFC_MAX_ENTRIES  = 50;
+constexpr uint8_t NFC_MAX_UID_LEN  = 10;
+
+struct NfcWhitelistEntry
+{
+    uint8_t uid[NFC_MAX_UID_LEN];
+    uint8_t len;
+};
+
+Preferences nfcPreferences;
+static NfcWhitelistEntry g_nfcWhitelist[NFC_MAX_ENTRIES];
+static uint8_t g_nfcWhitelistCount = 0;
+
+static bool HexCharToNibble(char c, uint8_t& outNibble)
+{
+    if (c >= '0' && c <= '9') { outNibble = c - '0'; return true; }
+    if (c >= 'a' && c <= 'f') { outNibble = c - 'a' + 10; return true; }
+    if (c >= 'A' && c <= 'F') { outNibble = c - 'A' + 10; return true; }
+    return false;
+}
+
+static bool HexStringToUid(const String& hex, uint8_t* outUid, uint8_t maxLen, uint8_t& outLen)
+{
+    size_t hexLen = hex.length();
+    if (hexLen == 0 || hexLen % 2 != 0) return false;
+    size_t byteLen = hexLen / 2;
+    if (byteLen > maxLen) return false;
+
+    for (size_t i = 0; i < byteLen; i++)
+    {
+        uint8_t hi, lo;
+        if (!HexCharToNibble(hex.charAt(i * 2), hi) ||
+            !HexCharToNibble(hex.charAt(i * 2 + 1), lo))
+            return false;
+        outUid[i] = (uint8_t)((hi << 4) | lo);
+    }
+    outLen = (uint8_t)byteLen;
+    return true;
+}
+
+static String UidToHexString(const uint8_t* uid, uint8_t len)
+{
+    String s;
+    s.reserve(len * 2);
+    for (uint8_t i = 0; i < len; i++)
+    {
+        if (uid[i] < 0x10) s += '0';
+        s += String(uid[i], HEX);
+    }
+    s.toUpperCase();
+    return s;
+}
+
+/*=====================================================
+    AUDIT LOG (NVS)
+=====================================================*/
+constexpr uint8_t NFC_AUDIT_MAX_ENTRIES = 10;
+
+static void AppendNfcAuditLog(const String& uidHex, uint32_t timestamp)
+{
+    String existing = nfcPreferences.getString("nfc_audit", "");
+
+    uint8_t count = 0;
+    for (size_t i = 0; i < existing.length(); i++)
+        if (existing.charAt(i) == ',') count++;
+    if (existing.length() > 0) count++;
+
+    if (count >= NFC_AUDIT_MAX_ENTRIES)
+    {
+        int firstComma = existing.indexOf(',');
+        if (firstComma != -1) existing = existing.substring(firstComma + 1);
+    }
+
+    String newEntry = uidHex + "@" + String(timestamp);
+    if (existing.length() > 0)
+        existing += "," + newEntry;
+    else
+        existing = newEntry;
+
+    nfcPreferences.putString("nfc_audit", existing);
+}
+
+static void SaveNfcWhitelistToNVS()
+{
+    String combined;
+    for (uint8_t i = 0; i < g_nfcWhitelistCount; i++)
+    {
+        if (i > 0) combined += ",";
+        combined += UidToHexString(g_nfcWhitelist[i].uid, g_nfcWhitelist[i].len);
+    }
+    nfcPreferences.putString("nfc_whitelist", combined);
+}
+
+static void LoadNfcWhitelistFromNVS()
+{
+    g_nfcWhitelistCount = 0;
+    String combined = nfcPreferences.getString("nfc_whitelist", "");
+    if (combined.length() == 0) return;
+
+    int start = 0;
+    while (start < (int)combined.length() && g_nfcWhitelistCount < NFC_MAX_ENTRIES)
+    {
+        int comma = combined.indexOf(',', start);
+        String token = (comma == -1) ? combined.substring(start) : combined.substring(start, comma);
+
+        uint8_t uid[NFC_MAX_UID_LEN];
+        uint8_t len;
+        if (HexStringToUid(token, uid, NFC_MAX_UID_LEN, len))
+        {
+            memcpy(g_nfcWhitelist[g_nfcWhitelistCount].uid, uid, len);
+            g_nfcWhitelist[g_nfcWhitelistCount].len = len;
+            g_nfcWhitelistCount++;
+        }
+
+        if (comma == -1) break;
+        start = comma + 1;
+    }
+}
+
+static bool IsUidWhitelisted(const uint8_t* uid, uint8_t len)
+{
+    for (uint8_t i = 0; i < g_nfcWhitelistCount; i++)
+    {
+        if (g_nfcWhitelist[i].len == len &&
+            memcmp(g_nfcWhitelist[i].uid, uid, len) == 0)
+            return true;
+    }
+    return false;
+}
+
+/*=====================================================
+    TÁC VỤ: NẠP/XOÁ UID QUA SERIAL
+=====================================================*/
+static String ReadSerialLine()
+{
+    static String buffer;
+    while (Serial.available())
+    {
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r')
+        {
+            if (buffer.length() == 0) continue;
+            String line = buffer;
+            buffer = "";
+            return line;
+        }
+        buffer += c;
+    }
+    return "";
+}
+
+void TaskNFCProvisioning(void *pvParameters)
+{
+    for (;;)
+    {
+        if (Serial.available())
+        {
+            String line = ReadSerialLine();
+            line.trim();
+
+            if (line.length() == 0)
+            {
+                // bỏ qua dòng rỗng
+            }
+            else if (line.startsWith("NFC_ADD:"))
+            {
+                String hexUid = line.substring(8);
+                uint8_t uid[NFC_MAX_UID_LEN];
+                uint8_t len;
+
+                if (!HexStringToUid(hexUid, uid, NFC_MAX_UID_LEN, len))
+                    LOG_PRINTLN("ERROR:UID khong dung dinh dang hex");
+                else if (g_nfcWhitelistCount >= NFC_MAX_ENTRIES)
+                    LOG_PRINTLN("ERROR:Whitelist da day");
+                else
+                {
+                    memcpy(g_nfcWhitelist[g_nfcWhitelistCount].uid, uid, len);
+                    g_nfcWhitelist[g_nfcWhitelistCount].len = len;
+                    g_nfcWhitelistCount++;
+                    SaveNfcWhitelistToNVS();
+                    LOG_PRINTLN("SUCCESS");
+                }
+            }
+            else if (line.startsWith("NFC_DEL:"))
+            {
+                String hexUid = line.substring(8);
+                uint8_t uid[NFC_MAX_UID_LEN];
+                uint8_t len;
+
+                if (!HexStringToUid(hexUid, uid, NFC_MAX_UID_LEN, len))
+                {
+                    LOG_PRINTLN("ERROR:UID khong dung dinh dang hex");
+                }
+                else
+                {
+                    bool found = false;
+                    for (uint8_t i = 0; i < g_nfcWhitelistCount; i++)
+                    {
+                        if (g_nfcWhitelist[i].len == len &&
+                            memcmp(g_nfcWhitelist[i].uid, uid, len) == 0)
+                        {
+                            for (uint8_t j = i; j < g_nfcWhitelistCount - 1; j++)
+                                g_nfcWhitelist[j] = g_nfcWhitelist[j + 1];
+                            g_nfcWhitelistCount--;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) { SaveNfcWhitelistToNVS(); LOG_PRINTLN("SUCCESS"); }
+                    else LOG_PRINTLN("ERROR:UID khong ton tai trong whitelist");
+                }
+            }
+            else if (line == "NFC_CLEAR")
+            {
+                g_nfcWhitelistCount = 0;
+                SaveNfcWhitelistToNVS();
+                LOG_PRINTLN("SUCCESS");
+            }
+            else if (line == "NFC_LIST")
+            {
+                LOG_PRINTF("Whitelist (%u the):\n", g_nfcWhitelistCount);
+                for (uint8_t i = 0; i < g_nfcWhitelistCount; i++)
+                    LOG_PRINTLN(("  " + UidToHexString(g_nfcWhitelist[i].uid, g_nfcWhitelist[i].len)).c_str());
+            }
+            else if (line == "GET_CAR_ID")
+            {
+                LOG_PRINTF("CAR_ID:%s\n", g_carId.c_str());
+            }
+            else if (line.startsWith("SET_CAR_ID:"))
+            {
+                String newCarId = line.substring(11);
+                newCarId.trim();
+                if (newCarId.length() == 0)
+                {
+                    LOG_PRINTLN("ERROR:car_id rong");
+                }
+                else
+                {
+                    bool carIdChanged = (g_carId.length() > 0) && (g_carId != newCarId);
+                    SaveCarId(newCarId);
+                    if (carIdChanged)
+                    {
+                        g_nfcWhitelistCount = 0;
+                        SaveNfcWhitelistToNVS();
+                        LOG_PRINTLN("[CAR PROVISION] car_id doi khac - da xoa sach whitelist NFC cu");
+                    }
+                    LOG_PRINTLN("SUCCESS");
+                }
+            }
+            else if (line.startsWith("NFC_WRITE_BOOKING:"))
+            {
+                String bookingId = line.substring(19);
+                uint8_t uid[NFC_MAX_UID_LEN];
+                uint8_t uidLen;
+
+                if (!NFC_TryReadCard(uid, uidLen, NFC_MAX_UID_LEN))
+                {
+                    LOG_PRINTLN("ERROR:Khong thay the - ap the vao dau doc roi thu lai");
+                }
+                else if (bookingId.length() > NFC_DATA_MAX_LEN - 1)
+                {
+                    LOG_PRINTLN("ERROR:booking_id qua dai");
+                    NFC_EndSession();
+                }
+                else
+                {
+                    if (NFC_WriteData((const uint8_t*)bookingId.c_str(), bookingId.length()))
+                        LOG_PRINTLN("SUCCESS");
+                    else
+                        LOG_PRINTLN("ERROR:Ghi that bai (xem log NFC ERROR de biet ly do)");
+                    NFC_EndSession();
+                }
+            }
+            else if (line == "NFC_READ_BOOKING")
+            {
+                uint8_t uid[NFC_MAX_UID_LEN];
+                uint8_t uidLen;
+                if (!NFC_TryReadCard(uid, uidLen, NFC_MAX_UID_LEN))
+                {
+                    LOG_PRINTLN("ERROR:Khong thay the - ap the vao dau doc roi thu lai");
+                }
+                else
+                {
+                    uint8_t data[NFC_DATA_MAX_LEN + 1] = {};
+                    size_t dataLen = 0;
+                    if (NFC_ReadData(data, NFC_DATA_MAX_LEN, dataLen))
+                    {
+                        data[dataLen] = '\0';
+                        LOG_PRINTF("NFC_BOOKING_DATA:%s\n", (char*)data);
+                    }
+                    else
+                    {
+                        LOG_PRINTLN("ERROR:Doc that bai (xem log NFC ERROR de biet ly do)");
+                    }
+                    NFC_EndSession();
+                }
+            }
+            else if (line == "NFC_AUDIT")
+            {
+                String log = nfcPreferences.getString("nfc_audit", "");
+                LOG_PRINTLN("Audit log (backup unlock):");
+                if (log.length() == 0)
+                {
+                    LOG_PRINTLN("  (chua co lan mo khoa nao qua NFC)");
+                }
+                else
+                {
+                    int start = 0;
+                    while (start < (int)log.length())
+                    {
+                        int comma = log.indexOf(',', start);
+                        String entry = (comma == -1) ? log.substring(start) : log.substring(start, comma);
+                        LOG_PRINTLN(("  " + entry).c_str());
+                        if (comma == -1) break;
+                        start = comma + 1;
+                    }
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+/*=====================================================
+    TÁC VỤ: ĐỌC THẺ NFC (backup unlock)
+=====================================================*/
+constexpr uint32_t NFC_UNLOCK_COOLDOWN_MS  = 30000;
+constexpr uint8_t  NFC_MAX_FAILED_ATTEMPTS = 5;
+constexpr uint32_t NFC_FAILED_WINDOW_MS    = 60000;
+constexpr uint32_t NFC_LOCKOUT_MS          = 300000; // 5 phút
+
+void TaskNFC(void *pvParameters)
+{
+    if (!NFC_Init())
+    {
+        LOG_PRINTLN("[CAR NFC ERROR] RC522 init failed");
+        vTaskDelete(NULL);
+    }
+
+    LOG_PRINTLN("[CAR NFC] San sang quet the...");
+
+    uint8_t lastUid[NFC_MAX_UID_LEN] = {};
+    uint8_t lastUidLen = 0;
+    uint32_t lastUidTime = 0;
+
+    uint32_t unlockCooldownUntil = 0;
+    uint32_t lockoutUntil        = 0;
+    uint8_t  failedAttemptCount  = 0;
+    uint32_t failedWindowStart   = 0;
+
+    for (;;)
+    {
+        uint32_t now = millis();
+
+        if (now < unlockCooldownUntil) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+        if (now < lockoutUntil)        { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+
+        uint8_t uid[NFC_MAX_UID_LEN];
+        uint8_t uidLen;
+
+        if (NFC_TryReadCard(uid, uidLen, NFC_MAX_UID_LEN))
+        {
+            bool sameAsLast    = (uidLen == lastUidLen) && (memcmp(uid, lastUid, uidLen) == 0);
+            bool withinDebounce = (now - lastUidTime) < NFC_DEBOUNCE_MS;
+
+            if (!(sameAsLast && withinDebounce))
+            {
+                memcpy(lastUid, uid, uidLen);
+                lastUidLen  = uidLen;
+                lastUidTime = now;
+
+                String uidHex = UidToHexString(uid, uidLen);
+                LOG_PRINTF("UID_DETECTED:%s\n", uidHex.c_str());
+
+                if (IsUidWhitelisted(uid, uidLen))
+                {
+                    // NFC chỉ là backup — chỉ cho phép khi không có BLE/UWB đang hoạt động.
+                    if (!hasRealKey ||
+                        g_fsmState == FSM_IDLE ||
+                        g_fsmState == FSM_COOLDOWN)
+                    {
+                        LOG_PRINTF("[CAR NFC] The %s hop le. Mo khoa (NFC backup)\n", uidHex.c_str());
+
+                        // Gửi lệnh mở khóa thực qua CAN tới Gateway/Actuator
+                        SendActuatorCmd(ACTUATOR_CMD_UNLOCK);
+
+                        AppendNfcAuditLog(uidHex, now);
+                        unlockCooldownUntil = now + NFC_UNLOCK_COOLDOWN_MS;
+                        LOG_PRINTF("[CAR NFC] Da mo khoa xe. Tam dung quet trong %lu ms\n",
+                                   (unsigned long)NFC_UNLOCK_COOLDOWN_MS);
+
+                        failedAttemptCount = 0;
+                    }
+                    else
+                    {
+                        LOG_PRINTF("[CAR NFC] The %s hop le nhung BLE/UWB dang hoat dong (FSM=%d) - NFC bi bo qua\n",
+                                   uidHex.c_str(), (int)g_fsmState);
+                    }
+                }
+                else
+                {
+                    LOG_PRINTF("[CAR NFC] The %s khong hop le, tu choi mo cua.\n", uidHex.c_str());
+
+                    if (now - failedWindowStart > NFC_FAILED_WINDOW_MS)
+                    {
+                        failedWindowStart  = now;
+                        failedAttemptCount = 0;
+                    }
+                    failedAttemptCount++;
+
+                    if (failedAttemptCount >= NFC_MAX_FAILED_ATTEMPTS)
+                    {
+                        lockoutUntil = now + NFC_LOCKOUT_MS;
+                        LOG_PRINTF("[CAR NFC] CANH BAO: %u lan the sai - khoa NFC %lu ms\n",
+                                   failedAttemptCount, (unsigned long)NFC_LOCKOUT_MS);
+                        failedAttemptCount = 0;
+                    }
+                }
+            }
+
+            NFC_EndSession();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+/*=====================================================
+    TÁC VỤ: UNLOCK FSM (theo dõi khoảng cách UWB)
+=====================================================
+ * FSM_TRACKING  → vào R_UNLOCK liên tục T_STABLE_MS → FSM_UNLOCKED
+ * FSM_UNLOCKED  → ra ngoài R_LOCK M_RELOCK lần liên tiếp → FSM_COOLDOWN
+ * BLE fail-safe → mất liên lạc BLE_FAILSAFE_MS → relock bất kể FSM
+ */
+void TaskUnlock(void *pvParameters)
+{
+    uint32_t inRangeStartMs  = 0;
+    bool     inRangeStarted  = false;
+    uint8_t  outRangeCount   = 0;
+
+    for (;;)
+    {
+        // Chỉ chạy logic khi đang tracking
+        CarFsmState_t state = g_fsmState;
+
+        if (state == FSM_TRACKING || state == FSM_UNLOCK_WINDOW || state == FSM_UNLOCKED)
+        {
+            uint32_t now = millis();
+
+            // ── BLE fail-safe ──────────────────────────────────────────────
+            if ((now - g_lastBleMs) > BLE_FAILSAFE_MS)
+            {
+                LOG_PRINTLN("[CAR FSM ] BLE mat lien lac > fail-safe - relock");
+                SendActuatorCmd(ACTUATOR_CMD_LOCK);
+                UWB_StopRanging();
+                g_fsmState     = FSM_COOLDOWN;
+                inRangeStarted = false;
+                outRangeCount  = 0;
+                vTaskDelay(pdMS_TO_TICKS(FSM_COOLDOWN_MS));
+                g_fsmState = FSM_IDLE;
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+
+            // ── Đọc khoảng cách UWB ──────────────────────────────────────
+            float dist;
+            if (!UWB_GetLastDistance(dist))
+            {
+                // UWB chưa có mẫu - đợi thêm
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
+
+            // ── FSM_TRACKING / FSM_UNLOCK_WINDOW ─────────────────────────
+            if (state == FSM_TRACKING || state == FSM_UNLOCK_WINDOW)
+            {
+                if (dist <= UWB_R_UNLOCK)
+                {
+                    // Đang trong ngưỡng unlock
+                    if (!inRangeStarted)
+                    {
+                        inRangeStarted = true;
+                        inRangeStartMs = now;
+                        g_fsmState = FSM_UNLOCK_WINDOW;
+                        LOG_PRINTF("[CAR FSM ] Vao vung unlock (%.2f m), bat dau tinh gio...\n", dist);
+                    }
+                    else if ((now - inRangeStartMs) >= UWB_T_STABLE_MS)
+                    {
+                        // Đủ thời gian → mở khóa
+                        LOG_PRINTF("[CAR FSM ] Mo khoa! Giu %.2f m trong %lu ms\n",
+                                   dist, (unsigned long)UWB_T_STABLE_MS);
+                        SendActuatorCmd(ACTUATOR_CMD_UNLOCK);
+                        g_fsmState    = FSM_UNLOCKED;
+                        outRangeCount = 0;
+                        inRangeStarted = false;
+                    }
+                }
+                else
+                {
+                    // Ra ngoài ngưỡng — reset bộ đếm ổn định
+                    if (inRangeStarted)
+                    {
+                        LOG_PRINTF("[CAR FSM ] Ra khoi vung unlock (%.2f m), reset timer\n", dist);
+                        inRangeStarted = false;
+                        g_fsmState = FSM_TRACKING;
+                    }
+                }
+            }
+            // ── FSM_UNLOCKED ───────────────────────────────────────────────
+            else if (state == FSM_UNLOCKED)
+            {
+                if (dist > UWB_R_LOCK)
+                {
+                    outRangeCount++;
+                    LOG_PRINTF("[CAR FSM ] Xa vung lock (%.2f m), outRangeCount=%u/%u\n",
+                               dist, outRangeCount, UWB_M_RELOCK);
+
+                    if (outRangeCount >= UWB_M_RELOCK)
+                    {
+                        LOG_PRINTLN("[CAR FSM ] Relock - khoa lai");
+                        SendActuatorCmd(ACTUATOR_CMD_LOCK);
+                        UWB_StopRanging();
+                        g_fsmState    = FSM_COOLDOWN;
+                        outRangeCount = 0;
+                        vTaskDelay(pdMS_TO_TICKS(FSM_COOLDOWN_MS));
+                        g_fsmState = FSM_IDLE;
+                    }
+                }
+                else
+                {
+                    // Trở lại gần - reset bộ đếm
+                    if (outRangeCount > 0)
+                    {
+                        LOG_PRINTF("[CAR FSM ] Quay lai vung an toan (%.2f m), reset outRangeCount\n", dist);
+                        outRangeCount = 0;
+                    }
+                }
+            }
+        }
+        else
+        {
+            // FSM_IDLE / FSM_COOLDOWN - không cần làm gì, chờ
+            inRangeStarted = false;
+            outRangeCount  = 0;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+/*=====================================================
+        XIN KEY_ROOT TỪ GATEWAY QUA CAN (ISO-TP)
+=====================================================*/
+static bool RequestKeyRootFromGatewayOnce(bool verbose)
+{
+    KeyRequestPayload request = {};
+    strncpy(request.car_id, g_carId.c_str(), sizeof(request.car_id) - 1);
+
+    uint8_t reqBuf[KEY_REQUEST_PAYLOAD_SIZE];
+    if (!SerializeKeyRequest(request, reqBuf, sizeof(reqBuf)))
+    {
+        LOG_PRINTLN("[CAR ERROR] Serialize KeyRequest that bai");
+        return false;
+    }
+
+    if (!ISOTP_Send(CAN_ID_KEY_PROVISION_REQ, reqBuf, sizeof(reqBuf), ISOTP_TIMEOUT_MS))
+    {
+        if (verbose) LOG_PRINTLN("[CAR ERROR] Gui yeu cau xin key_root qua CAN that bai");
+        return false;
+    }
+
+    if (verbose) LOG_PRINTLN("[CAR] Da gui yeu cau xin key_root qua CAN, cho phan hoi tu Gateway...");
+
+    uint8_t respBuf[KEY_RESPONSE_PAYLOAD_SIZE];
+    size_t respLen = 0;
+    if (!ISOTP_Receive(CAN_ID_KEY_PROVISION_RESP, respBuf, sizeof(respBuf), respLen, ISOTP_TIMEOUT_MS))
+    {
+        if (verbose) LOG_PRINTLN("[CAR ERROR] Khong nhan duoc phan hoi tu Gateway");
+        return false;
+    }
+
+    KeyResponsePayload response;
+    if (!DeserializeKeyResponse(respBuf, respLen, response))
+    {
+        LOG_PRINTLN("[CAR ERROR] Deserialize KeyResponse that bai");
+        return false;
+    }
+
+    Crypto_SetKey(response.key_root, response.key_len);
+    LOG_PRINTF("[CAR] Da nhan key_root (%u byte) tu Gateway qua CAN\n", (unsigned)response.key_len);
+    PrintHex("[CAR DEBUG] Key_root nhan duoc:", response.key_root, response.key_len);
+    return true;
+}
+
+// Exponential backoff: 3s → 6s → 12s → 24s → tối đa 30s
+void TaskKeyRequest(void *pvParameters)
+{
+    xSemaphoreTake(keyRequestTrigger, portMAX_DELAY);
+
+    LOG_PRINTLN("[CAR] Keyfob ket noi lan dau - bat dau xin key_root qua CAN...");
+
+    uint32_t delayMs = KEY_REQUEST_RETRY_DELAY_MS;
+
+    for (;;)
+    {
+        if (RequestKeyRootFromGatewayOnce(true))
+        {
+            hasRealKey = true;
+            LOG_PRINTLN("[CAR] key_root da san sang, dung retry.");
+            vTaskDelete(NULL);
+        }
+
+        LOG_PRINTF("[CAR] Gateway chua san sang, thu lai sau %lu ms...\n", (unsigned long)delayMs);
+        vTaskDelay(pdMS_TO_TICKS(delayMs));
+
+        // Tăng gấp đôi, tối đa 30s
+        delayMs = delayMs * 2;
+        if (delayMs > 30000) delayMs = 30000;
+    }
+}
+
+/*=====================================================
+                    BLE Task
+=====================================================*/
+void PrintHex(const char* label, const uint8_t* data, size_t length)
+{
+    LOG_PRINTF("%s ", label);
+    for (size_t i = 0; i < length; i++)
+        LOG_PRINTF("%02X ", data[i]);
+    Serial.println();
+}
+
+void TaskBLE(void *pvParameters)
+{
+    if (!BLE_Car_Init())
+    {
+        LOG_PRINTLN("[BLE CAR] Init failed!");
+        vTaskDelete(NULL);
+    }
+
+    for (;;)
+    {
+        BLE_Car_Task();
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+static void SendChallenge()
+{
+    LOG_PRINTLN("[CAR AUTH ] Generating challenge");
+
+    Packet txChallenge = {};
+    txChallenge.type   = PKT_CHALLENGE;
+    txChallenge.length = 16;
+
+    esp_fill_random(savedNonce, 16);
+    memcpy(txChallenge.data, savedNonce, 16);
+    PrintHex("[CAR DEBUG] Nonce :", savedNonce, 16);
+
+    if (BLE_Car_SendPacket(txChallenge))
+    {
+        BLE_Car_SetState(CAR_CHALLENGE_SENT);
+        waitingForResponse = true;
+        challengeSendTime  = millis();
+        g_fsmState         = FSM_AUTH;
+    }
+    else
+    {
+        LOG_PRINTLN("[CAR ERROR] Failed to send CHALLENGE");
+    }
+}
+
+/*=====================================================
+                Main Logic Task
+=====================================================*/
+void TaskLogic(void *pvParameters)
+{
+    Packet rxPacket;
+
+    for (;;)
+    {
+        while (xQueueReceive(bleRxQueue, &rxPacket, 0) == pdTRUE)
+        {
+            switch (rxPacket.type)
+            {
+            case PKT_READY:
+            {
+                // Cập nhật thời điểm contact BLE gần nhất
+                g_lastBleMs = millis();
+
+                String receivedCarId((char*)rxPacket.data, rxPacket.length);
+
+                if (rxPacket.length == 0 || receivedCarId != g_carId)
+                {
+                    LOG_PRINTF("[CAR] Keyfob car_id=\"%s\" khong khop xe nay (%s) - tu choi\n",
+                               receivedCarId.c_str(), g_carId.c_str());
+
+                    Packet tx = {};
+                    tx.type   = PKT_AUTH_FAIL;
+                    tx.length = 1;
+                    tx.data[0] = AUTH_FAIL_REASON_CAR_ID_MISMATCH;
+                    BLE_Car_SendPacket(tx);
+
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    BLE_Car_Disconnect();
+                    break;
+                }
+
+                if (hasRealKey)
+                {
+                    SendChallenge();
+                }
+                else
+                {
+                    xSemaphoreGive(keyRequestTrigger);
+                    LOG_PRINTLN("[CAR] Keyfob da ket noi, dang cho key_root tu Gateway...");
+                }
+                break;
+            }
+
+            case PKT_RESPONSE:
+            {
+                waitingForResponse = false;
+                g_lastBleMs = millis(); // liên lạc BLE OK
+
+                LOG_PRINTLN("[CAR AUTH ] Verifying HMAC");
+
+                if (rxPacket.length != 32)
+                {
+                    LOG_PRINTF("[CAR ERROR] Invalid RESPONSE length (%u)\n", rxPacket.length);
+
+                    Packet tx = {};
+                    tx.type   = PKT_AUTH_FAIL;
+                    tx.length = 1;
+                    tx.data[0] = AUTH_FAIL_REASON_INVALID_LENGTH;
+                    BLE_Car_SendPacket(tx);
+
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    BLE_Car_Disconnect();
+                    break;
+                }
+
+                PrintHex("[CAR DEBUG] Token :", rxPacket.data, 32);
+                bool isValid = Crypto_Verify_HMAC(rxPacket.data, savedNonce);
+
+                Packet tx = {};
+                tx.length = 0;
+
+                if (isValid)
+                {
+                    LOG_PRINTLN("[CAR AUTH ] SUCCESS");
+                    BLE_Car_SetState(CAR_AUTHENTICATED);
+
+                    tx.type = PKT_AUTH_OK;
+                    if (!BLE_Car_SendPacket(tx))
+                        LOG_PRINTLN("[CAR ERROR] Failed to send AUTH_OK");
+
+                    // ── M1: Tính K_session = HKDF(key_root, nonce) ──────────
+                    // savedNonce là nonce đã dùng trong challenge vừa rồi.
+                    g_kSessionReady = false;
+                    if (!Crypto_HKDF(savedNonce, 16, g_kSession, 16))
+                    {
+                        LOG_PRINTLN("[CAR ERROR] HKDF that bai - ranging khong co session key");
+                        // Vẫn init UWB với key mặc định (fallback)
+                    }
+                    else
+                    {
+                        g_kSessionReady = true;
+                        LOG_PRINTLN("[CAR UWB  ] K_session computed via HKDF");
+                        PrintHex("[CAR DEBUG] K_session:", g_kSession, 16);
+                    }
+
+                    // ── M2/M3: Init UWB + nạp K_session ────────────────────
+                    if (!UWB_Init())
+                    {
+                        LOG_PRINTLN("[CAR ERROR] UWB Init that bai");
+                        break;
+                    }
+
+                    if (g_kSessionReady)
+                    {
+                        if (!UWB_SetSessionKey(g_kSession, 16))
+                            LOG_PRINTLN("[CAR ERROR] UWB_SetSessionKey that bai - ranging voi key mac dinh");
+                        else
+                            LOG_PRINTLN("[CAR UWB  ] K_session nap vao STS OK");
+                    }
+
+                    if (UWB_StartRanging())
+                    {
+                        LOG_PRINTLN("[CAR UWB  ] Ranging started");
+                        g_fsmState  = FSM_TRACKING;
+                        g_lastBleMs = millis();
+                    }
+                    else
+                    {
+                        LOG_PRINTLN("[CAR ERROR] UWB start failed");
+                        g_fsmState = FSM_IDLE;
+                    }
+                }
+                else
+                {
+                    LOG_PRINTLN("[CAR AUTH ] FAILED");
+                    g_fsmState = FSM_IDLE;
+
+                    tx.type   = PKT_AUTH_FAIL;
+                    tx.length = 1;
+                    tx.data[0] = AUTH_FAIL_REASON_HMAC_INVALID;
+                    BLE_Car_SendPacket(tx);
+
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    BLE_Car_Disconnect();
+                }
+                break;
+            }
+
+            default:
+                LOG_PRINTF("[CAR ERROR] Unknown packet: 0x%02X\n", rxPacket.type);
+                break;
+            }
+        }
+
+        // Cập nhật g_lastBleMs khi BLE đang ở trạng thái authenticated.
+        // Nếu keyfob mất kết nối, state sẽ rời CAR_AUTHENTICATED → fail-safe bắt đầu đếm.
+        if (BLE_Car_GetState() == CAR_AUTHENTICATED)
+            g_lastBleMs = millis();
+
+        if (hasRealKey && BLE_Car_GetState() == CAR_KEY_RECEIVED)
+            SendChallenge();
+
+        if (waitingForResponse &&
+            (millis() - challengeSendTime > BLE_TIMEOUT_MS))
+        {
+            LOG_PRINTLN("[CAR AUTH ] Response timeout");
+            waitingForResponse = false;
+            g_fsmState = FSM_IDLE;
+            BLE_Car_Disconnect();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/*=====================================================
+                        Setup
+=====================================================*/
+void setup()
+{
+    Serial.begin(115200);
+    delay(1000);
+
+    Serial.println();
+    LOG_PRINTLN("===============================");
+    LOG_PRINTLN("      CAR ECU START");
+    LOG_PRINTLN("===============================");
+
+    if (!Queue_Init())
+    {
+        LOG_PRINTLN("[CAR ERROR] Queue init failed!");
+        while (1) delay(1000);
+    }
+
+    carPreferences.begin("car_id_ns", false);
+    LoadCarId();
+
+    if (g_carId.length() == 0)
+        LOG_PRINTLN("[CAR PROVISION] Chua co car_id - cho lenh SET_CAR_ID:<value> qua Serial");
+    else
+        LOG_PRINTF("[CAR PROVISION] car_id da co: %s\n", g_carId.c_str());
+
+    nfcPreferences.begin("car_nfc", false);
+    LoadNfcWhitelistFromNVS();
+    LOG_PRINTF("[CAR NFC] Da nap %u the tu whitelist\n", g_nfcWhitelistCount);
+
+    // TWAI khởi tạo ngay trong setup() — không lazy trong TaskKeyRequest nữa.
+    TWAI_Init();
+
+    keyRequestTrigger = xSemaphoreCreateBinary();
+
+    xTaskCreatePinnedToCore(TaskBLE,             "BLE",       4096, nullptr, 2, &TaskBLE_Handle,             0);
+    xTaskCreatePinnedToCore(TaskLogic,           "Logic",     4096, nullptr, 1, &TaskLogic_Handle,           1);
+    xTaskCreatePinnedToCore(TaskKeyRequest,      "KeyReq",    4096, nullptr, 1, &TaskKeyRequest_Handle,      1);
+    // xTaskCreatePinnedToCore(TaskNFC,             "NFC",       4096, nullptr, 1, &TaskNFC_Handle,             1);
+    xTaskCreatePinnedToCore(TaskNFCProvisioning, "NFCProv",   4096, nullptr, 1, &TaskNFCProvisioning_Handle, 1);
+    xTaskCreatePinnedToCore(TaskUnlock,          "Unlock",    4096, nullptr, 1, &TaskUnlock_Handle,          1);
+}
+
+void loop()
+{
+    vTaskDelete(NULL);
+}
