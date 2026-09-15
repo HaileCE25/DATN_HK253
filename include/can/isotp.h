@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <driver/twai.h>
 
 // -----------------------------------------------------------------------------
 // ISO-TP (ISO 15765-2) - đơn giản hóa cho hệ thống 2 node (Car <-> Gateway)
@@ -26,6 +27,18 @@ bool ISOTP_Send(
 // cần. Blocking tối đa timeoutMs cho toàn bộ quá trình.
 bool ISOTP_Receive(
     uint32_t can_id,
+    uint8_t* outBuffer,
+    size_t bufferCapacity,
+    size_t& outLength,
+    uint32_t timeoutMs);
+
+// Giống ISOTP_Receive nhưng frame ĐẦU TIÊN (SF hoặc FF) đã được nơi gọi đọc
+// ra khỏi bus. Dùng cho node nhận nhiều CAN ID: 1 vòng dispatch đọc frame
+// rồi route theo identifier, thay vì mỗi handler tự đọc bus và vô tình vứt
+// bỏ frame của ID khác. CAN ID của luồng lấy từ firstFrame.identifier.
+// SF trả về ngay; FF thì gửi Flow Control và chờ CF tối đa timeoutMs.
+bool ISOTP_ReceiveFromFirstFrame(
+    const twai_message_t& firstFrame,
     uint8_t* outBuffer,
     size_t bufferCapacity,
     size_t& outLength,

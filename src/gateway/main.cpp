@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include "mbedtls/aes.h"
 
 #include "can/twai_driver.h"
@@ -9,8 +10,12 @@
 #include "cloud/firebase_manager.h"
 #include "cloud/cloud_config.h"
 #include "shared/config.h"
+#include "lcd/lcd_display.h"
 
 constexpr uint32_t ISOTP_TIMEOUT_MS = 2000;
+constexpr uint32_t CAN_DISPATCH_POLL_MS = 100;
+
+static bool s_canReady = false;
 
 static void PrintHex(const char* label, const uint8_t* data, size_t length)
 {
@@ -87,13 +92,16 @@ static bool AesCtrDecrypt(
 // =============================================================================
 //  XỬ LÝ CAN_ID_KEY_PROVISION_REQ — lấy key_root từ Firebase, trả qua CAN
 // =============================================================================
-static void HandleKeyRequest()
+static void HandleKeyRequest(const twai_message_t& firstFrame)
 {
     uint8_t reqBuf[KEY_REQUEST_PAYLOAD_SIZE];
     size_t reqLen = 0;
 
-    if (!ISOTP_Receive(CAN_ID_KEY_PROVISION_REQ, reqBuf, sizeof(reqBuf), reqLen, 100))
-        return; // không có request nào tới, bình thường
+    if (!ISOTP_ReceiveFromFirstFrame(firstFrame, reqBuf, sizeof(reqBuf), reqLen, ISOTP_TIMEOUT_MS))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] Nhan KeyRequest ISO-TP that bai");
+        return;
+    }
 
     KeyRequestPayload request;
     if (!DeserializeKeyRequest(reqBuf, reqLen, request))
@@ -167,6 +175,7 @@ static void HandleKeyRequest()
     {
         LOG_PRINTF("[GATEWAY] Đã giải mã và gửi key_root (%u byte) qua CAN cho car_id=%s\n",
                    (unsigned)keyLen, request.car_id);
+        LCD_ShowMessage("KEY_ROOT -> CAR", request.car_id, 2000);
     }
     else
     {
@@ -177,14 +186,17 @@ static void HandleKeyRequest()
 // =============================================================================
 //  XỬ LÝ CAN_ID_ACTUATOR_CMD — nhận lệnh mở/khoá từ ECU Access, kích relay
 // =============================================================================
-static void HandleActuatorCommand()
+static void HandleActuatorCommand(const twai_message_t& firstFrame)
 {
     uint8_t cmdBuf[1];
     size_t cmdLen = 0;
 
-    // timeout=0: chỉ lấy nếu có sẵn trong buffer, không block
-    if (!ISOTP_Receive(CAN_ID_ACTUATOR_CMD, cmdBuf, sizeof(cmdBuf), cmdLen, 0))
+    // Payload 1 byte luôn là Single Frame -> không cần chờ thêm frame nào
+    if (!ISOTP_ReceiveFromFirstFrame(firstFrame, cmdBuf, sizeof(cmdBuf), cmdLen, 0))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] ActuatorCmd: frame khong hop le");
         return;
+    }
 
     if (cmdLen < 1)
     {
@@ -197,17 +209,40 @@ static void HandleActuatorCommand()
     case ACTUATOR_CMD_UNLOCK:
         LOG_PRINTLN("[GATEWAY ACTUATOR] UNLOCK - kich relay mo khoa");
         // TODO: digitalWrite(RELAY_PIN, HIGH) hoặc tín hiệu tương đương
+        LCD_SetLockState(true);
         break;
 
     case ACTUATOR_CMD_LOCK:
         LOG_PRINTLN("[GATEWAY ACTUATOR] LOCK - tat relay, khoa lai");
         // TODO: digitalWrite(RELAY_PIN, LOW)
+        LCD_SetLockState(false);
         break;
 
     default:
         LOG_PRINTF("[GATEWAY ERROR] ActuatorCmd unknown: 0x%02X\n", cmdBuf[0]);
         break;
     }
+}
+
+// =============================================================================
+//  XỬ LÝ CAN_ID_CAR_STATUS — trạng thái BLE/FSM/UWB từ Car, chỉ để hiển thị
+// =============================================================================
+static void HandleCarStatus(const twai_message_t& firstFrame)
+{
+    uint8_t buf[CAR_STATUS_PAYLOAD_SIZE];
+    size_t len = 0;
+
+    if (!ISOTP_ReceiveFromFirstFrame(firstFrame, buf, sizeof(buf), len, 0))
+        return;
+
+    CarStatusPayload status;
+    if (!DeserializeCarStatus(buf, len, status))
+    {
+        LOG_PRINTLN("[GATEWAY ERROR] CarStatus payload khong hop le");
+        return;
+    }
+
+    LCD_SetCarStatus(status);
 }
 
 // =============================================================================
@@ -222,25 +257,64 @@ void setup()
     LOG_PRINTLN("   GATEWAY START");
     LOG_PRINTLN("===============================");
 
-    TWAI_Init();
+    // LCD init trước để hiển thị được tiến trình WiFi/Firebase (blocking vài giây).
+    // Không có LCD thì gateway vẫn chạy bình thường.
+    if (!LCD_Init())
+        LOG_PRINTLN("[GATEWAY WARN] LCD khong san sang - chay tiep khong hien thi");
 
+    s_canReady = TWAI_Init();
+
+    // Các thông báo khởi động dưới đây có thời lượng dài hơn thời gian block của
+    // bước tương ứng -> luôn hiện suốt lúc chờ, bước sau ghi đè bước trước.
+    LCD_SetWifiState(LCD_LINK_PENDING);
+    LCD_ShowMessage("GATEWAY START", "WiFi: " WIFI_SSID, WIFI_CONNECT_TIMEOUT_MS + 1000);
     if (!WiFi_Connect())
     {
         LOG_PRINTLN("[GATEWAY ERROR] WiFi connect failed");
+        LCD_SetWifiState(LCD_LINK_FAIL);
+        LCD_ShowMessage("WiFi FAIL", WIFI_SSID, 5000);
         return;
     }
+    LCD_SetWifiState(LCD_LINK_OK);
 
+    LCD_SetFirebaseState(LCD_LINK_PENDING);
+    LCD_ShowMessage("WiFi OK", WiFi.localIP().toString().c_str(), 30000);
     if (!Firebase_Init())
     {
         LOG_PRINTLN("[GATEWAY ERROR] Firebase init failed");
+        LCD_SetFirebaseState(LCD_LINK_FAIL);
+        LCD_ShowMessage("Firebase FAIL", WiFi.localIP().toString().c_str(), 5000);
+        return;
+    }
+    LCD_SetFirebaseState(LCD_LINK_OK);
+    LCD_ShowMessage("Firebase OK", WiFi.localIP().toString().c_str(), 3000);
+
+    LOG_PRINTLN("[GATEWAY] Sẵn sàng, chờ KeyRequest + ActuatorCmd + CarStatus từ Car qua CAN...");
+}
+
+// Vòng dispatch CAN DUY NHẤT: đọc 1 frame rồi route theo identifier.
+// Không để từng handler tự đọc bus - ISOTP_Receive(id) vứt bỏ mọi frame khác
+// ID trong lúc chờ, nên handler này sẽ "ăn mất" frame của handler kia.
+void loop()
+{
+    if (!s_canReady)
+    {
+        delay(1000); // TWAI init lỗi: TWAI_Receive trả false ngay -> tránh busy-loop
         return;
     }
 
-    LOG_PRINTLN("[GATEWAY] Sẵn sàng, chờ KeyRequest + ActuatorCmd từ Car qua CAN...");
-}
+    twai_message_t frame;
+    if (!TWAI_Receive(frame, pdMS_TO_TICKS(CAN_DISPATCH_POLL_MS)))
+        return;
 
-void loop()
-{
-    HandleKeyRequest();
-    HandleActuatorCommand();
+    if (frame.extd || frame.rtr)
+        return;
+
+    switch (frame.identifier)
+    {
+    case CAN_ID_KEY_PROVISION_REQ: HandleKeyRequest(frame);      break;
+    case CAN_ID_ACTUATOR_CMD:      HandleActuatorCommand(frame); break;
+    case CAN_ID_CAR_STATUS:        HandleCarStatus(frame);       break;
+    default:                                                     break;
+    }
 }

@@ -6,8 +6,8 @@
 // Cloud Subsystem Configuration (Gateway only)
 // -----------------------------------------------------------------------------
 
-#define WIFI_SSID       "DUY_DAT"
-#define WIFI_PASSWORD   "20001967"
+#define WIFI_SSID       "Haile"
+#define WIFI_PASSWORD   "02052004"
 
 #define FIREBASE_DATABASE_URL  "https://smart-car-rental-b2b-default-rtdb.asia-southeast1.firebasedatabase.app"
 

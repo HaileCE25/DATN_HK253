@@ -10,6 +10,7 @@
 #include "can/can_ids.h"
 #include "uwb/uwb_hal.h"
 #include "nfc/rfid_hal.h"
+#include "lcd/lcd_display.h"
 
 /*=====================================================
             TRẠNG THÁI FSM MỞ KHÓA
@@ -63,6 +64,7 @@ TaskHandle_t TaskKeyRequest_Handle   = nullptr;
 TaskHandle_t TaskNFC_Handle          = nullptr;
 TaskHandle_t TaskNFCProvisioning_Handle = nullptr;
 TaskHandle_t TaskUnlock_Handle       = nullptr;
+TaskHandle_t TaskCarStatus_Handle    = nullptr;
 
 static uint8_t savedNonce[16];
 static bool waitingForResponse = false;
@@ -78,6 +80,17 @@ static bool     g_kSessionReady = false;
 static volatile CarFsmState_t g_fsmState  = FSM_IDLE;
 static volatile uint32_t      g_lastBleMs = 0;  // millis() lần cuối có contact BLE
 
+// Thời điểm auth bị từ chối gần nhất - chỉ để báo trạng thái lên gateway/LCD
+// (sau khi fail car disconnect ngay, nếu không giữ lại thì LCD không kịp thấy).
+static volatile bool     g_authFailSeen   = false;
+static volatile uint32_t g_lastAuthFailMs = 0;
+
+static void MarkAuthFail()
+{
+    g_lastAuthFailMs = millis();
+    g_authFailSeen   = true;
+}
+
 /*=====================================================
     GỬI LỆNH ACTUATOR QUA CAN
 =====================================================*/
@@ -86,7 +99,12 @@ static void SendActuatorCmd(uint8_t cmd)
     if (!ISOTP_Send(CAN_ID_ACTUATOR_CMD, &cmd, 1, ISOTP_TIMEOUT_MS))
     {
         LOG_PRINTF("[CAR ERROR] Gửi ActuatorCmd 0x%02X qua CAN thất bại\n", cmd);
+        LCD_ShowMessage("CAN SEND FAIL", cmd == ACTUATOR_CMD_UNLOCK ? "UNLOCK cmd" : "LOCK cmd", 2000);
+        return;
     }
+
+    // Chỉ đổi LOCK/OPEN khi lệnh đã lên bus - không hiển thị trạng thái chưa thi hành
+    LCD_SetLockState(cmd == ACTUATOR_CMD_UNLOCK);
 }
 
 /*=====================================================
@@ -683,6 +701,7 @@ static bool RequestKeyRootFromGatewayOnce(bool verbose)
 
     Crypto_SetKey(response.key_root, response.key_len);
     LOG_PRINTF("[CAR] Da nhan key_root (%u byte) tu Gateway qua CAN\n", (unsigned)response.key_len);
+    LCD_ShowMessage("KEY_ROOT OK", "from Gateway", 2000);
     PrintHex("[CAR DEBUG] Key_root nhan duoc:", response.key_root, response.key_len);
     return true;
 }
@@ -795,6 +814,7 @@ void TaskLogic(void *pvParameters)
                     tx.length = 1;
                     tx.data[0] = AUTH_FAIL_REASON_CAR_ID_MISMATCH;
                     BLE_Car_SendPacket(tx);
+                    MarkAuthFail();
 
                     vTaskDelay(pdMS_TO_TICKS(200));
                     BLE_Car_Disconnect();
@@ -829,6 +849,7 @@ void TaskLogic(void *pvParameters)
                     tx.length = 1;
                     tx.data[0] = AUTH_FAIL_REASON_INVALID_LENGTH;
                     BLE_Car_SendPacket(tx);
+                    MarkAuthFail();
 
                     vTaskDelay(pdMS_TO_TICKS(200));
                     BLE_Car_Disconnect();
@@ -901,6 +922,7 @@ void TaskLogic(void *pvParameters)
                     tx.length = 1;
                     tx.data[0] = AUTH_FAIL_REASON_HMAC_INVALID;
                     BLE_Car_SendPacket(tx);
+                    MarkAuthFail();
 
                     vTaskDelay(pdMS_TO_TICKS(200));
                     BLE_Car_Disconnect();
@@ -926,12 +948,112 @@ void TaskLogic(void *pvParameters)
             (millis() - challengeSendTime > BLE_TIMEOUT_MS))
         {
             LOG_PRINTLN("[CAR AUTH ] Response timeout");
+            MarkAuthFail();
             waitingForResponse = false;
             g_fsmState = FSM_IDLE;
             BLE_Car_Disconnect();
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/*=====================================================
+    TÁC VỤ: PHÁT TRẠNG THÁI QUA CAN (hiển thị LCD gateway)
+=====================================================
+ * Gửi khi trạng thái đổi (tối đa mỗi CAR_STATUS_POLL_MS) + heartbeat mỗi
+ * CAR_STATUS_HEARTBEAT_MS để gateway phát hiện car offline. Chỉ ĐỌC state
+ * (UWB_GetLastDistance là non-blocking, không tiêu thụ mẫu của TaskUnlock).
+ */
+constexpr uint32_t CAR_STATUS_POLL_MS         = 100;
+constexpr uint32_t CAR_STATUS_HEARTBEAT_MS    = 1000;
+constexpr uint32_t CAR_STATUS_AUTH_FAIL_HOLD_MS = 3000;
+
+static uint8_t MapBleStatus(uint32_t now)
+{
+    CarState bleState = BLE_Car_GetState();
+
+    if (bleState == CAR_AUTHENTICATED)
+        return CAR_STATUS_BLE_AUTHENTICATED;
+
+    if (g_authFailSeen && (now - g_lastAuthFailMs) < CAR_STATUS_AUTH_FAIL_HOLD_MS)
+        return CAR_STATUS_BLE_AUTH_FAIL;
+
+    switch (bleState)
+    {
+    case CAR_CONNECTED:      return CAR_STATUS_BLE_CONNECTED;
+    case CAR_KEY_RECEIVED:
+    case CAR_CHALLENGE_SENT: return CAR_STATUS_BLE_AUTHENTICATING;
+    case CAR_IDLE:
+    default:                 return CAR_STATUS_BLE_ADVERTISING;
+    }
+}
+
+static uint8_t MapFsmStatus(CarFsmState_t state)
+{
+    switch (state)
+    {
+    case FSM_AUTH:          return CAR_STATUS_FSM_AUTH;
+    case FSM_TRACKING:      return CAR_STATUS_FSM_TRACKING;
+    case FSM_UNLOCK_WINDOW: return CAR_STATUS_FSM_UNLOCK_WINDOW;
+    case FSM_UNLOCKED:      return CAR_STATUS_FSM_UNLOCKED;
+    case FSM_COOLDOWN:      return CAR_STATUS_FSM_COOLDOWN;
+    case FSM_IDLE:
+    default:                return CAR_STATUS_FSM_IDLE;
+    }
+}
+
+static uint16_t DistanceToCm(float meters)
+{
+    if (meters <= 0.0f)
+        return 0;
+
+    float cm = meters * 100.0f + 0.5f;
+    if (cm >= (float)(CAR_STATUS_DISTANCE_INVALID - 1))
+        return CAR_STATUS_DISTANCE_INVALID - 1; // bão hoà, không đụng giá trị INVALID
+
+    return (uint16_t)cm;
+}
+
+void TaskCarStatus(void *pvParameters)
+{
+    CarStatusPayload lastSent = {};
+    bool     lastSendOk = false;
+    uint32_t lastSentMs = 0;
+
+    for (;;)
+    {
+        uint32_t now = millis();
+
+        CarStatusPayload status = {};
+        status.ble = MapBleStatus(now);
+        status.fsm = MapFsmStatus(g_fsmState);
+
+        float dist;
+        status.distance_cm = UWB_GetLastDistance(dist) ? DistanceToCm(dist)
+                                                       : CAR_STATUS_DISTANCE_INVALID;
+
+        // LCD gắn tại car: cập nhật trực tiếp, không phụ thuộc CAN
+        LCD_SetCarStatus(status);
+
+        bool changed = status.ble != lastSent.ble ||
+                       status.fsm != lastSent.fsm ||
+                       status.distance_cm != lastSent.distance_cm;
+        bool heartbeatDue = (now - lastSentMs) >= CAR_STATUS_HEARTBEAT_MS;
+
+        // Lần gửi trước lỗi (gateway chưa bật, bus không ACK) -> chỉ thử lại theo
+        // nhịp heartbeat, không spam log "[CAN ERROR] Transmit failed" mỗi 100ms.
+        if ((changed && lastSendOk) || heartbeatDue)
+        {
+            uint8_t buf[CAR_STATUS_PAYLOAD_SIZE];
+            lastSendOk = SerializeCarStatus(status, buf, sizeof(buf)) &&
+                         ISOTP_Send(CAN_ID_CAR_STATUS, buf, sizeof(buf), 0);
+            if (lastSendOk)
+                lastSent = status;
+            lastSentMs = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(CAR_STATUS_POLL_MS));
     }
 }
 
@@ -947,6 +1069,9 @@ void setup()
     LOG_PRINTLN("===============================");
     LOG_PRINTLN("      CAR ECU START");
     LOG_PRINTLN("===============================");
+
+    // Không block: task LCD tự init I2C trên core 0, không có LCD vẫn chạy tiếp
+    LCD_Init();
 
     if (!Queue_Init())
     {
@@ -977,6 +1102,7 @@ void setup()
     // xTaskCreatePinnedToCore(TaskNFC,             "NFC",       4096, nullptr, 1, &TaskNFC_Handle,             1);
     xTaskCreatePinnedToCore(TaskNFCProvisioning, "NFCProv",   4096, nullptr, 1, &TaskNFCProvisioning_Handle, 1);
     xTaskCreatePinnedToCore(TaskUnlock,          "Unlock",    4096, nullptr, 1, &TaskUnlock_Handle,          1);
+    xTaskCreatePinnedToCore(TaskCarStatus,       "CarStatus", 3072, nullptr, 1, &TaskCarStatus_Handle,       1);
 }
 
 void loop()

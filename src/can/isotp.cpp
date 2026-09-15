@@ -127,6 +127,24 @@ bool ISOTP_Receive(
     if (!gotFirst)
         return false;
 
+    uint32_t now = millis();
+    uint32_t remainingMs = (now < deadline) ? (deadline - now) : 0;
+    return ISOTP_ReceiveFromFirstFrame(rxMsg, outBuffer, bufferCapacity, outLength, remainingMs);
+}
+
+bool ISOTP_ReceiveFromFirstFrame(
+    const twai_message_t& rxMsg,
+    uint8_t* outBuffer,
+    size_t bufferCapacity,
+    size_t& outLength,
+    uint32_t timeoutMs)
+{
+    if (outBuffer == nullptr || bufferCapacity == 0 || rxMsg.data_length_code < 1)
+        return false;
+
+    const uint32_t can_id = rxMsg.identifier;
+    uint32_t deadline = millis() + timeoutMs;
+
     uint8_t pciType = rxMsg.data[0] >> 4;
 
     if (pciType == ISOTP_PCI_SF)

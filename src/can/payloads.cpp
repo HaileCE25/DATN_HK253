@@ -75,3 +75,43 @@ bool DeserializeKeyResponse(
 
     return true;
 }
+
+bool SerializeCarStatus(
+    const CarStatusPayload& payload,
+    uint8_t* buffer,
+    size_t buffer_capacity)
+{
+    if (buffer == nullptr)
+        return false;
+
+    if (buffer_capacity < CAR_STATUS_PAYLOAD_SIZE)
+        return false;
+
+    buffer[0] = payload.ble;
+    buffer[1] = payload.fsm;
+    buffer[2] = (uint8_t)(payload.distance_cm & 0xFF);
+    buffer[3] = (uint8_t)(payload.distance_cm >> 8);
+
+    return true;
+}
+
+bool DeserializeCarStatus(
+    const uint8_t* buffer,
+    size_t buffer_length,
+    CarStatusPayload& payload)
+{
+    if (buffer == nullptr)
+        return false;
+
+    if (buffer_length != CAR_STATUS_PAYLOAD_SIZE)
+        return false;
+
+    if (buffer[0] > CAR_STATUS_BLE_MAX || buffer[1] > CAR_STATUS_FSM_MAX)
+        return false;
+
+    payload.ble = buffer[0];
+    payload.fsm = buffer[1];
+    payload.distance_cm = (uint16_t)(buffer[2] | (buffer[3] << 8));
+
+    return true;
+}

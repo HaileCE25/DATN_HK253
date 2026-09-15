@@ -20,3 +20,8 @@ constexpr uint32_t CAN_ID_KEY_PROVISION_RESP = 0x101;
 // Car ra lệnh mở/khoá actuator (1-byte payload: ACTUATOR_CMD_*)
 // Gateway nhận và forward tín hiệu tới relay/actuator vật lý.
 constexpr uint32_t CAN_ID_ACTUATOR_CMD = 0x200;
+
+// Car phát trạng thái BLE/FSM/khoảng cách UWB định kỳ (payload CarStatusPayload,
+// vừa 1 Single Frame). Gateway chỉ dùng để hiển thị LCD - không có ý nghĩa
+// điều khiển, mất vài frame không ảnh hưởng an toàn.
+constexpr uint32_t CAN_ID_CAR_STATUS = 0x300;

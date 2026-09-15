@@ -484,6 +484,13 @@ bool UWB_Init()
     if (!rangingCoreInit())
     {
         UWB_LOG_PRINTLN("[UWB DW3000] Init FAILED (chip khong vao IDLE)");
+        // Chẩn đoán: DEV_ID (reg 0x00:00) phải là 0xDECA0302/0xDECA0312.
+        //   0xFFFFFFFF / 0x00000000 -> SPI không nói chuyện được (dây MISO/SCK/CS, nguồn 3V3/GND)
+        //   0xDECA03x2 nhưng không IDLE -> SPI OK, vấn đề ở reset/clock/nguồn chip
+        UWB_LOG_PRINTF("[UWB DW3000] DIAG DEV_ID=0x%08lX PMSC_STATE=0x%08lX SYS_STATUS=0x%08lX\n",
+                       (unsigned long)DW3000.read(0x00, 0x00),
+                       (unsigned long)DW3000.read(0x0F, 0x30),
+                       (unsigned long)DW3000.read(0x00, 0x44));
         return false;
     }
 
