@@ -236,7 +236,7 @@ bool BLE_Key_Init()
 
     keyState = KEY_SCANNING;
 
-    LOG_PRINTLN("[KEY BLE ] Scanning...");
+    LOG_PRINTLN("[KEY BLE ] Scanning");
     return true;
 }
 
@@ -250,7 +250,7 @@ void BLE_Key_Task()
     {
         if (ConnectToCar())
         {
-            LOG_PRINTLN("[KEY AUTH] Waiting for challenge...");
+            LOG_PRINTLN("[KEY AUTH] Waiting for challenge");
         }
         else
         {

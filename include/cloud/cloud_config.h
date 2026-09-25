@@ -6,8 +6,14 @@
 // Cloud Subsystem Configuration (Gateway only)
 // -----------------------------------------------------------------------------
 
-#define WIFI_SSID       "Haile"
-#define WIFI_PASSWORD   "02052004"
+// WiFi không còn hard-code: lưu trong NVS (wifi_store) và cấu hình qua
+// captive portal (wifi_portal). Xem wifi_manager.h.
+
+// Access point cấu hình, LUÔN phát.
+// Đổi mật khẩu này (>= 8 ký tự) và dán nhãn lên thiết bị: ai vào được AP này
+// thì đổi được WiFi của Gateway.
+#define WIFI_AP_SSID         "GATEWAY"
+#define WIFI_AP_PASSWORD     "gateway123"
 
 #define FIREBASE_DATABASE_URL  "https://smart-car-rental-b2b-default-rtdb.asia-southeast1.firebasedatabase.app"
 
@@ -22,4 +28,6 @@ constexpr uint8_t FIREBASE_MASTER_KEY[32] = {
 };
 
 // Timeout chờ WiFi connect trước khi coi là fail.
-#define WIFI_CONNECT_TIMEOUT_MS  15000
+#define WIFI_CONNECT_TIMEOUT_MS             15000
+// WPA2-Enterprise xác thực nhiều bước nên lâu hơn.
+#define WIFI_ENTERPRISE_CONNECT_TIMEOUT_MS  25000

@@ -7,6 +7,7 @@
 #include "can/twai_driver.h"
 #include "can/isotp.h"
 #include "can/payloads.h"
+#include "shared/vn_time.h"
 #include "can/can_ids.h"
 #include "uwb/uwb_hal.h"
 #include "nfc/rfid_hal.h"
@@ -28,10 +29,12 @@ typedef enum
 /*=====================================================
             NGƯỠNG UWB & FAIL-SAFE
 =====================================================*/
-constexpr float     UWB_R_UNLOCK      = 0.8f;    // m — vào gần hơn mức này → mở
+constexpr float     UWB_R_UNLOCK      = 1.0f;    // m — vào gần hơn mức này → mở
 constexpr float     UWB_R_LOCK        = 1.5f;    // m — ra xa hơn mức này → relock
 constexpr uint32_t  UWB_T_STABLE_MS   = 3000;    // ms — phải ở trong R_UNLOCK liên tục
 constexpr uint8_t   UWB_M_RELOCK      = 5;       // mẫu liên tiếp > R_LOCK → relock
+constexpr uint8_t   UWB_M_UNLOCK_ABORT = 2;      // mẫu liên tiếp ra khỏi R_UNLOCK → mới reset dwell timer
+                                                   // (chống dao động nhiễu quanh biên R_UNLOCK làm mất trắng bộ đếm)
 constexpr uint32_t  BLE_FAILSAFE_MS   = 5000;    // ms — mất BLE lâu hơn → relock
 constexpr uint32_t  FSM_COOLDOWN_MS   = 5000;    // ms — cooldown sau relock
 
@@ -53,6 +56,15 @@ static void SaveCarId(const String& carId)
 }
 
 constexpr uint32_t KEY_REQUEST_RETRY_DELAY_MS = 5000;
+// Gateway tra /Bookings + /SecureKeys (vài lời gọi HTTPS) trước khi trả lời.
+constexpr uint32_t KEY_RESPONSE_TIMEOUT_MS = 5000;
+// Đã có key vẫn hỏi lại Gateway theo chu kỳ này để phát hiện admin thu hồi
+// (booking REVOKED). Thu hồi có hiệu lực chậm nhất sau khoảng này. Gateway
+// không trả lời (mất mạng...) thì giữ key cũ - chỉ KEY_STATUS_REVOKED mới xoá.
+constexpr uint32_t KEY_REVALIDATE_INTERVAL_MS = 10000;
+// Bị thu hồi rồi thì Keyfob vẫn tự kết nối lại liên tục; trong khoảng này Car
+// từ chối ngay, không hỏi Gateway (tránh mỗi lần connect lại là 1 lượt Firebase).
+constexpr uint32_t KEY_REVOKED_RECHECK_MS = 30000;
 
 void PrintHex(const char* label, const uint8_t* data, size_t length);
 constexpr uint32_t ISOTP_TIMEOUT_MS = 2000;
@@ -70,7 +82,28 @@ static uint8_t savedNonce[16];
 static bool waitingForResponse = false;
 static uint32_t challengeSendTime = 0;
 static volatile bool hasRealKey = false;
+// Hạn của key_root theo Unix time UTC do Gateway gửi kèm (KEY_EXPIRE_UNKNOWN = chưa rõ).
+// Hiện chỉ lưu và in log; chưa dùng để từ chối (Car chưa có nguồn thời gian thực).
+static volatile uint32_t g_keyExpireUnix = KEY_EXPIRE_UNKNOWN;
 static SemaphoreHandle_t keyRequestTrigger;
+
+// Thu hồi key: TaskKeyRequest phát hiện, TaskLogic (chủ phiên BLE) huỷ phiên.
+// g_keyRevoked chặn cả Keyfob lẫn thẻ NFC, lưu NVS để reset Car không mở lại được.
+static volatile bool     g_keyRevokePending = false;
+static volatile bool     g_keyRevoked       = false;
+static volatile uint32_t g_keyRevokedAtMs   = 0;
+
+static void SetKeyRevoked(bool revoked)
+{
+    if (revoked)
+        g_keyRevokedAtMs = millis();
+
+    if (g_keyRevoked == revoked)
+        return; // chỉ ghi flash khi đổi trạng thái, không ghi mỗi lượt hỏi lại
+
+    g_keyRevoked = revoked;
+    carPreferences.putBool("key_revoked", revoked);
+}
 
 // K_session tính từ HKDF(key_root, nonce) sau khi auth thành công
 static uint8_t  g_kSession[16];
@@ -487,8 +520,14 @@ void TaskNFC(void *pvParameters)
 
                 if (IsUidWhitelisted(uid, uidLen))
                 {
+                    // Booking bị thu hồi: thẻ NFC cũng mất quyền, như Keyfob.
+                    if (g_keyRevoked)
+                    {
+                        LOG_PRINTF("[CAR NFC] The %s hop le nhung key da bi THU HOI - tu choi\n", uidHex.c_str());
+                        LCD_ShowMessage("KEY REVOKED", "NFC denied", 2000);
+                    }
                     // NFC chỉ là backup — chỉ cho phép khi không có BLE/UWB đang hoạt động.
-                    if (!hasRealKey ||
+                    else if (!hasRealKey ||
                         g_fsmState == FSM_IDLE ||
                         g_fsmState == FSM_COOLDOWN)
                     {
@@ -545,11 +584,38 @@ void TaskNFC(void *pvParameters)
  * FSM_UNLOCKED  → ra ngoài R_LOCK M_RELOCK lần liên tiếp → FSM_COOLDOWN
  * BLE fail-safe → mất liên lạc BLE_FAILSAFE_MS → relock bất kể FSM
  */
+
+// Gọi sau khi hết FSM_COOLDOWN. TRƯỚC ĐÂY luôn về FSM_IDLE, và ranging chỉ được
+// bật lại khi Car nhận PKT_READY MỚI - nhưng Keyfob chỉ gửi PKT_READY DUY NHẤT
+// mỗi lần BLE connect (xem case PKT_READY, ble_key.cpp), không gửi lại trên
+// cùng 1 kết nối. Hệ quả: nếu BLE vẫn còn kết nối (rất thường gặp - tầm BLE xa
+// hơn nhiều so với ngưỡng relock 1.5 m), Keyfob quay lại gần xe sau khi cooldown
+// hết KHÔNG unlock lại được, phải rớt hẳn BLE rồi kết nối lại mới xin auth mới.
+// Sửa: nếu BLE vẫn đang ở CAR_AUTHENTICATED (chưa hề rớt), bật lại ranging và
+// vào thẳng FSM_TRACKING bằng K_session cũ - không cần challenge/response lại.
+// (Lưu ý: Keyfob phía nó cũng không tự dừng ranging khi relock - xem TX task -
+// nên khi Car bật lại RX, Keyfob đã "sẵn sàng" ở đó chờ ngay từ trước.)
+static void ResumeTrackingOrIdleAfterCooldown()
+{
+    if (BLE_Car_GetState() == CAR_AUTHENTICATED && UWB_StartRanging())
+    {
+        LOG_PRINTLN("[CAR FSM ] Het cooldown, BLE con phien - resume ranging");
+        g_fsmState = FSM_TRACKING;
+    }
+    else
+    {
+        g_fsmState = FSM_IDLE;
+    }
+}
+
 void TaskUnlock(void *pvParameters)
 {
-    uint32_t inRangeStartMs  = 0;
-    bool     inRangeStarted  = false;
-    uint8_t  outRangeCount   = 0;
+    uint32_t inRangeStartMs   = 0;
+    bool     inRangeStarted   = false;
+    uint8_t  unlockAbortCount = 0; // mẫu liên tiếp ra khỏi R_UNLOCK (debounce dwell timer)
+    uint8_t  outRangeCount    = 0;
+    float    lastRelockDist      = 0.0f;
+    bool     lastRelockDistValid = false; // để chỉ đếm outRangeCount trên mẫu MỚI, không đếm trùng mẫu cũ khi UWB duty-cycle (đo thưa sau unlock)
 
     for (;;)
     {
@@ -566,11 +632,13 @@ void TaskUnlock(void *pvParameters)
                 LOG_PRINTLN("[CAR FSM ] BLE mat lien lac > fail-safe - relock");
                 SendActuatorCmd(ACTUATOR_CMD_LOCK);
                 UWB_StopRanging();
-                g_fsmState     = FSM_COOLDOWN;
-                inRangeStarted = false;
-                outRangeCount  = 0;
+                g_fsmState          = FSM_COOLDOWN;
+                inRangeStarted      = false;
+                unlockAbortCount    = 0;
+                outRangeCount       = 0;
+                lastRelockDistValid = false;
                 vTaskDelay(pdMS_TO_TICKS(FSM_COOLDOWN_MS));
-                g_fsmState = FSM_IDLE;
+                ResumeTrackingOrIdleAfterCooldown();
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
@@ -589,6 +657,8 @@ void TaskUnlock(void *pvParameters)
             {
                 if (dist <= UWB_R_UNLOCK)
                 {
+                    unlockAbortCount = 0; // về lại trong vùng -> huỷ đếm "đang rời đi"
+
                     // Đang trong ngưỡng unlock
                     if (!inRangeStarted)
                     {
@@ -597,7 +667,9 @@ void TaskUnlock(void *pvParameters)
                         g_fsmState = FSM_UNLOCK_WINDOW;
                         LOG_PRINTF("[CAR FSM ] Vao vung unlock (%.2f m), bat dau tinh gio...\n", dist);
                     }
-                    else if ((now - inRangeStartMs) >= UWB_T_STABLE_MS)
+                    // hasRealKey: key có thể vừa bị thu hồi giữa vòng lặp này (TaskLogic
+                    // đang huỷ phiên) - không được mở khoá nữa.
+                    else if ((now - inRangeStartMs) >= UWB_T_STABLE_MS && hasRealKey)
                     {
                         // Đủ thời gian → mở khóa
                         LOG_PRINTF("[CAR FSM ] Mo khoa! Giu %.2f m trong %lu ms\n",
@@ -606,43 +678,65 @@ void TaskUnlock(void *pvParameters)
                         g_fsmState    = FSM_UNLOCKED;
                         outRangeCount = 0;
                         inRangeStarted = false;
+                        // Đo thưa CHỈ khi còn < UWB_R_UNLOCK (đứng sát xe); rời xa hơn để
+                        // relock thì UWB tự quay lại full-rate + lọc bình thường (xem
+                        // uwb_dw3000_rx.cpp::ShouldUseLowPowerNow()).
+                        UWB_SetLowPowerMode(true, UWB_R_UNLOCK);
                     }
                 }
                 else
                 {
-                    // Ra ngoài ngưỡng — reset bộ đếm ổn định
+                    // Ra ngoài ngưỡng — chỉ reset sau UWB_M_UNLOCK_ABORT mẫu liên tiếp,
+                    // tránh 1 mẫu nhiễu dao động quanh biên R_UNLOCK xoá sạch dwell timer đã tích luỹ.
                     if (inRangeStarted)
                     {
-                        LOG_PRINTF("[CAR FSM ] Ra khoi vung unlock (%.2f m), reset timer\n", dist);
-                        inRangeStarted = false;
-                        g_fsmState = FSM_TRACKING;
+                        unlockAbortCount++;
+                        if (unlockAbortCount >= UWB_M_UNLOCK_ABORT)
+                        {
+                            LOG_PRINTF("[CAR FSM ] Ra khoi vung unlock (%.2f m) du %u mau lien tiep - reset timer\n",
+                                       dist, (unsigned)unlockAbortCount);
+                            inRangeStarted   = false;
+                            unlockAbortCount = 0;
+                            g_fsmState = FSM_TRACKING;
+                        }
                     }
                 }
             }
             // ── FSM_UNLOCKED ───────────────────────────────────────────────
             else if (state == FSM_UNLOCKED)
             {
+                // UWB đang ở low-power mode (đo thưa mỗi ~2.5s) nhưng vòng lặp này vẫn
+                // poll mỗi 100ms -> cùng 1 mẫu cũ sẽ được đọc lại nhiều lần. Chỉ đếm khi
+                // giá trị THỰC SỰ đổi (mẫu mới), tránh outRangeCount tăng giả do đọc trùng.
+                bool isNewSample = (!lastRelockDistValid) || (dist != lastRelockDist);
+                lastRelockDist      = dist;
+                lastRelockDistValid = true;
+
                 if (dist > UWB_R_LOCK)
                 {
-                    outRangeCount++;
-                    LOG_PRINTF("[CAR FSM ] Xa vung lock (%.2f m), outRangeCount=%u/%u\n",
-                               dist, outRangeCount, UWB_M_RELOCK);
+                    if (isNewSample)
+                    {
+                        outRangeCount++;
+                        LOG_PRINTF("[CAR FSM ] Xa vung lock (%.2f m), outRangeCount=%u/%u\n",
+                                   dist, outRangeCount, UWB_M_RELOCK);
+                    }
 
                     if (outRangeCount >= UWB_M_RELOCK)
                     {
-                        LOG_PRINTLN("[CAR FSM ] Relock - khoa lai");
+                        LOG_PRINTLN("[CAR FSM ] Relock");
                         SendActuatorCmd(ACTUATOR_CMD_LOCK);
                         UWB_StopRanging();
                         g_fsmState    = FSM_COOLDOWN;
                         outRangeCount = 0;
+                        lastRelockDistValid = false;
                         vTaskDelay(pdMS_TO_TICKS(FSM_COOLDOWN_MS));
-                        g_fsmState = FSM_IDLE;
+                        ResumeTrackingOrIdleAfterCooldown();
                     }
                 }
                 else
                 {
                     // Trở lại gần - reset bộ đếm
-                    if (outRangeCount > 0)
+                    if (outRangeCount > 0 && isNewSample)
                     {
                         LOG_PRINTF("[CAR FSM ] Quay lai vung an toan (%.2f m), reset outRangeCount\n", dist);
                         outRangeCount = 0;
@@ -653,8 +747,10 @@ void TaskUnlock(void *pvParameters)
         else
         {
             // FSM_IDLE / FSM_COOLDOWN - không cần làm gì, chờ
-            inRangeStarted = false;
-            outRangeCount  = 0;
+            inRangeStarted      = false;
+            unlockAbortCount    = 0;
+            outRangeCount       = 0;
+            lastRelockDistValid = false;
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -664,72 +760,150 @@ void TaskUnlock(void *pvParameters)
 /*=====================================================
         XIN KEY_ROOT TỪ GATEWAY QUA CAN (ISO-TP)
 =====================================================*/
-static bool RequestKeyRootFromGatewayOnce(bool verbose)
+enum KeyFetchResult
 {
+    KEY_FETCH_FAILED,   // không có/không hiểu phản hồi - không kết luận gì
+    KEY_FETCH_OK,
+    KEY_FETCH_REVOKED,  // Gateway xác nhận xe không còn booking ACTIVE
+};
+
+// verbose = false: lượt hỏi lại định kỳ - chỉ log khi có thay đổi.
+static KeyFetchResult RequestKeyRootFromGatewayOnce(bool verbose)
+{
+    // TaskKeyRequest là nơi DUY NHẤT đọc CAN phía Car: bỏ các frame còn sót
+    // (vd. phản hồi đến muộn của lượt trước) để không ráp nhầm vào lượt này.
+    twai_message_t stale;
+    while (TWAI_Receive(stale, 0)) {}
+
     KeyRequestPayload request = {};
     strncpy(request.car_id, g_carId.c_str(), sizeof(request.car_id) - 1);
+    request.revalidate = !verbose;
 
     uint8_t reqBuf[KEY_REQUEST_PAYLOAD_SIZE];
     if (!SerializeKeyRequest(request, reqBuf, sizeof(reqBuf)))
     {
         LOG_PRINTLN("[CAR ERROR] Serialize KeyRequest that bai");
-        return false;
+        return KEY_FETCH_FAILED;
     }
 
     if (!ISOTP_Send(CAN_ID_KEY_PROVISION_REQ, reqBuf, sizeof(reqBuf), ISOTP_TIMEOUT_MS))
     {
-        if (verbose) LOG_PRINTLN("[CAR ERROR] Gui yeu cau xin key_root qua CAN that bai");
-        return false;
+        if (verbose) LOG_PRINTLN("[CAR ERROR] Gui yeu cau xin Keyroot qua CAN that bai");
+        return KEY_FETCH_FAILED;
     }
 
-    if (verbose) LOG_PRINTLN("[CAR] Da gui yeu cau xin key_root qua CAN, cho phan hoi tu Gateway...");
+    if (verbose) LOG_PRINTLN("[CAR] Da gui yeu cau xin Keyroot qua CAN, cho phan hoi tu Gateway");
 
     uint8_t respBuf[KEY_RESPONSE_PAYLOAD_SIZE];
     size_t respLen = 0;
-    if (!ISOTP_Receive(CAN_ID_KEY_PROVISION_RESP, respBuf, sizeof(respBuf), respLen, ISOTP_TIMEOUT_MS))
+    if (!ISOTP_Receive(CAN_ID_KEY_PROVISION_RESP, respBuf, sizeof(respBuf), respLen, KEY_RESPONSE_TIMEOUT_MS))
     {
         if (verbose) LOG_PRINTLN("[CAR ERROR] Khong nhan duoc phan hoi tu Gateway");
-        return false;
+        return KEY_FETCH_FAILED;
     }
 
     KeyResponsePayload response;
     if (!DeserializeKeyResponse(respBuf, respLen, response))
     {
         LOG_PRINTLN("[CAR ERROR] Deserialize KeyResponse that bai");
-        return false;
+        return KEY_FETCH_FAILED;
     }
 
+    if (response.status == KEY_STATUS_REVOKED)
+    {
+        LOG_PRINTLN("[CAR] Gateway bao key da bi THU HOI (khong con booking ACTIVE)");
+        return KEY_FETCH_REVOKED;
+    }
+
+    bool expireChanged = response.expire_unix != g_keyExpireUnix;
+
     Crypto_SetKey(response.key_root, response.key_len);
-    LOG_PRINTF("[CAR] Da nhan key_root (%u byte) tu Gateway qua CAN\n", (unsigned)response.key_len);
-    LCD_ShowMessage("KEY_ROOT OK", "from Gateway", 2000);
-    PrintHex("[CAR DEBUG] Key_root nhan duoc:", response.key_root, response.key_len);
-    return true;
+    g_keyExpireUnix = response.expire_unix;
+
+    if (verbose)
+        LOG_PRINTF("[CAR] Da nhan Keyroot (%u byte) tu Gateway qua CAN\n", (unsigned)response.key_len);
+
+    if (verbose || expireChanged)
+    {
+        if (response.expire_unix == KEY_EXPIRE_UNKNOWN)
+            LOG_PRINTLN("[CAR] Khong nhan duoc thong tin het han");
+        else
+        {
+            char expireVn[24];
+            VnTime_Format(response.expire_unix, expireVn, sizeof(expireVn));
+            LOG_PRINTF("[CAR] Key het han luc %s \n",
+                       expireVn, (unsigned long)response.expire_unix);
+        }
+    }
+
+    if (verbose)
+    {
+        LCD_ShowMessage("KEY_ROOT OK", "from Gateway", 2000);
+        PrintHex("[CAR DEBUG] Keyroot nhan duoc:", response.key_root, response.key_len);
+    }
+    return KEY_FETCH_OK;
 }
 
-// Exponential backoff: 3s → 6s → 12s → 24s → tối đa 30s
+// Xoá key khỏi RAM và báo TaskLogic huỷ phiên đang chạy. hasRealKey = false
+// trước tiên để TaskLogic không gửi CHALLENGE mới bằng key sắp bị xoá.
+// Không fallback về key mặc định trong hmac.cpp: thiếu hasRealKey thì Car
+// không bao giờ gửi CHALLENGE, nên key toàn 0 không dùng được để auth.
+static void RevokeKey()
+{
+    hasRealKey = false;
+
+    uint8_t zeroKey[32] = {};
+    Crypto_SetKey(zeroKey, sizeof(zeroKey));
+    g_keyExpireUnix = KEY_EXPIRE_UNKNOWN;
+
+    SetKeyRevoked(true);
+    g_keyRevokePending = true;
+
+    LOG_PRINTLN("[CAR] Da xoa Keyroot - huy phien BLE/UWB, khoa ca the NFC");
+}
+
+// Exponential backoff: 5s → 10s → 20s → tối đa 30s. Có key rồi thì hỏi lại
+// mỗi KEY_REVALIDATE_INTERVAL_MS; bị thu hồi thì quay lại chờ Keyfob kết nối.
+// Lần đầu được kích ngay trong setup() (không đợi Keyfob) để Car biết trạng
+// thái thu hồi sớm - thẻ NFC cần thông tin này dù không có Keyfob nào.
 void TaskKeyRequest(void *pvParameters)
 {
-    xSemaphoreTake(keyRequestTrigger, portMAX_DELAY);
-
-    LOG_PRINTLN("[CAR] Keyfob ket noi lan dau - bat dau xin key_root qua CAN...");
-
-    uint32_t delayMs = KEY_REQUEST_RETRY_DELAY_MS;
-
     for (;;)
     {
-        if (RequestKeyRootFromGatewayOnce(true))
+        xSemaphoreTake(keyRequestTrigger, portMAX_DELAY);
+
+        LOG_PRINTLN("[CAR] Bat dau xin Keyroot qua CAN");
+
+        uint32_t delayMs = KEY_REQUEST_RETRY_DELAY_MS;
+        KeyFetchResult result;
+
+        while ((result = RequestKeyRootFromGatewayOnce(true)) == KEY_FETCH_FAILED)
         {
-            hasRealKey = true;
-            LOG_PRINTLN("[CAR] key_root da san sang, dung retry.");
-            vTaskDelete(NULL);
+            LOG_PRINTF("[CAR] Gateway chua san sang, thu lai sau %lu ms...\n", (unsigned long)delayMs);
+            vTaskDelay(pdMS_TO_TICKS(delayMs));
+
+            // Tăng gấp đôi, tối đa 30s
+            delayMs = delayMs * 2;
+            if (delayMs > 30000) delayMs = 30000;
         }
 
-        LOG_PRINTF("[CAR] Gateway chua san sang, thu lai sau %lu ms...\n", (unsigned long)delayMs);
-        vTaskDelay(pdMS_TO_TICKS(delayMs));
+        if (result == KEY_FETCH_OK)
+        {
+            SetKeyRevoked(false);
+            hasRealKey = true;
+            LOG_PRINTLN("[CAR] Keyroot da san sang, chuyen sang kiem tra lai dinh ky.");
 
-        // Tăng gấp đôi, tối đa 30s
-        delayMs = delayMs * 2;
-        if (delayMs > 30000) delayMs = 30000;
+            do
+            {
+                vTaskDelay(pdMS_TO_TICKS(KEY_REVALIDATE_INTERVAL_MS));
+            } while (RequestKeyRootFromGatewayOnce(false) != KEY_FETCH_REVOKED);
+        }
+
+        RevokeKey();
+
+        // Bỏ trigger dồn lại trong lúc chờ Gateway - lần xin sau phải do
+        // 1 lần Keyfob kết nối MỚI kích hoạt.
+        xSemaphoreTake(keyRequestTrigger, 0);
     }
 }
 
@@ -784,6 +958,42 @@ static void SendChallenge()
     }
 }
 
+static void RejectKeyfobRevoked()
+{
+    Packet tx = {};
+    tx.type    = PKT_AUTH_FAIL;
+    tx.length  = 1;
+    tx.data[0] = AUTH_FAIL_REASON_KEY_REVOKED;
+    BLE_Car_SendPacket(tx);
+    MarkAuthFail();
+
+    vTaskDelay(pdMS_TO_TICKS(200));
+    BLE_Car_Disconnect();
+}
+
+// Huỷ phiên đang chạy sau khi key bị thu hồi (gọi từ TaskLogic). Đang mở khoá
+// thì khoá lại ngay - không đợi Keyfob đi xa hay BLE fail-safe.
+static void EndSessionOnKeyRevoked()
+{
+    CarFsmState_t state = g_fsmState;
+
+    waitingForResponse = false;
+    g_kSessionReady    = false;
+    memset(g_kSession, 0, sizeof(g_kSession));
+
+    if (state == FSM_TRACKING || state == FSM_UNLOCK_WINDOW || state == FSM_UNLOCKED)
+        UWB_StopRanging();
+    if (state == FSM_UNLOCKED)
+        SendActuatorCmd(ACTUATOR_CMD_LOCK);
+    if (state != FSM_COOLDOWN) // COOLDOWN: TaskUnlock tự đưa về IDLE khi hết (BLE đã ngắt)
+        g_fsmState = FSM_IDLE;
+
+    LCD_ShowMessage("KEY REVOKED", "Booking ended", 3000);
+
+    if (BLE_Car_GetState() != CAR_IDLE)
+        RejectKeyfobRevoked();
+}
+
 /*=====================================================
                 Main Logic Task
 =====================================================*/
@@ -824,6 +1034,11 @@ void TaskLogic(void *pvParameters)
                 if (hasRealKey)
                 {
                     SendChallenge();
+                }
+                else if (g_keyRevoked && (millis() - g_keyRevokedAtMs) < KEY_REVOKED_RECHECK_MS)
+                {
+                    LOG_PRINTLN("[CAR] Key vua bi thu hoi - tu choi Keyfob, chua hoi lai Gateway");
+                    RejectKeyfobRevoked();
                 }
                 else
                 {
@@ -934,6 +1149,12 @@ void TaskLogic(void *pvParameters)
                 LOG_PRINTF("[CAR ERROR] Unknown packet: 0x%02X\n", rxPacket.type);
                 break;
             }
+        }
+
+        if (g_keyRevokePending)
+        {
+            g_keyRevokePending = false;
+            EndSessionOnKeyRevoked();
         }
 
         // Cập nhật g_lastBleMs khi BLE đang ở trạng thái authenticated.
@@ -1096,10 +1317,24 @@ void setup()
 
     keyRequestTrigger = xSemaphoreCreateBinary();
 
+    g_keyRevoked = carPreferences.getBool("key_revoked", false);
+    if (g_keyRevoked)
+        LOG_PRINTLN("[CAR] Key dang o trang thai THU HOI (NVS) - Keyfob va the NFC bi chan");
+
+    // Xin key ngay khi boot (cần car_id): cập nhật trạng thái thu hồi cho NFC
+    // và bắt đầu vòng kiểm tra lại định kỳ mà không phải đợi Keyfob kết nối.
+    if (g_carId.length() > 0)
+        xSemaphoreGive(keyRequestTrigger);
+
     xTaskCreatePinnedToCore(TaskBLE,             "BLE",       4096, nullptr, 2, &TaskBLE_Handle,             0);
     xTaskCreatePinnedToCore(TaskLogic,           "Logic",     4096, nullptr, 1, &TaskLogic_Handle,           1);
     xTaskCreatePinnedToCore(TaskKeyRequest,      "KeyReq",    4096, nullptr, 1, &TaskKeyRequest_Handle,      1);
-    // xTaskCreatePinnedToCore(TaskNFC,             "NFC",       4096, nullptr, 1, &TaskNFC_Handle,             1);
+    // Core 0, không phải core 1: RangingTask UWB (priority 2, core 1) busy-wait
+    // trong cửa sổ DS-TWR (xem uwb_dw3000_rx.cpp) sẽ chiếm hết CPU core 1, khiến
+    // task priority 1 cùng core (kể cả NFC) gần như không được cấp CPU. Cùng lý
+    // do LCD task đã dùng core 0 (xem lcd_config.h). NFC dùng bus SPI mặc định
+    // (FSPI/SPI2) riêng với UWB (HSPI/SPI3) nên không tranh chấp phần cứng SPI.
+    xTaskCreatePinnedToCore(TaskNFC,             "NFC",       4096, nullptr, 1, &TaskNFC_Handle,             0);
     xTaskCreatePinnedToCore(TaskNFCProvisioning, "NFCProv",   4096, nullptr, 1, &TaskNFCProvisioning_Handle, 1);
     xTaskCreatePinnedToCore(TaskUnlock,          "Unlock",    4096, nullptr, 1, &TaskUnlock_Handle,          1);
     xTaskCreatePinnedToCore(TaskCarStatus,       "CarStatus", 3072, nullptr, 1, &TaskCarStatus_Handle,       1);

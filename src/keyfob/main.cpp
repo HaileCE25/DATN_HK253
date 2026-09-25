@@ -328,6 +328,12 @@ void TaskLogic(void *pvParameters)
                     LOG_PRINTLN("[KEY AUTH ] THAT BAI VINH VIEN: car_id khong khop voi Car");
                     BLE_Key_HaltPermanently();
                 }
+                else if (reason == AUTH_FAIL_REASON_KEY_REVOKED)
+                {
+                    // Không halt: admin có thể cấp lại booking, Car tự hỏi lại Gateway.
+                    LOG_PRINTLN("[KEY AUTH ] Key da bi THU HOI (booking khong con ACTIVE) - se thu lai");
+                    BLE_Key_Disconnect();
+                }
                 else
                 {
                     LOG_PRINTLN("[KEY AUTH ] Authentication FAILED - se thu lai");

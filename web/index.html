@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cấu hình WiFi</title>
+<style>
+/* Trang chạy trên AP không có Internet: KHÔNG dùng font/thư viện ngoài, icon là SVG nội tuyến. */
+:root{--bg:#f3f7fc;--card:#fff;--fg:#10213f;--mut:#64748b;--line:#e3e9f2;--acc:#3b82f6;--acc2:#2563eb;--accbg:#eef4ff;--ok:#16a34a;--okbg:#effbf3;--okline:#9ee6b8;--err:#dc2626}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;color:var(--fg);font:15px/1.45 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+  background:linear-gradient(180deg,#f7faff 0%,#edf3fb 100%)}
+main{max-width:1140px;margin:0 auto;padding:28px 16px 24px}
+svg{display:block}
+.ic{display:inline-flex;flex:none}
+.ic svg{width:100%;height:100%}
+
+/* ---------- Header ---------- */
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:20px}
+.brand .ic{width:58px;height:58px;color:var(--acc2)}
+h1{margin:0;font-size:30px;font-weight:700;letter-spacing:-.3px}
+.sub{margin:4px 0 0;color:var(--mut);font-size:16px}
+.apchip{display:flex;align-items:center;gap:12px}
+.apchip .ic{width:40px;height:40px;color:#1e3a8a}
+.apchip b{display:block;font-size:14px}
+.apchip div span{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:14px}
+.apchip div span:before{content:"";width:8px;height:8px;border-radius:50%;background:#22c55e}
+
+/* ---------- Trạng thái ---------- */
+.status{display:flex;align-items:center;gap:20px;margin:22px 0;padding:22px 24px;border-radius:16px;color:#fff;
+  background:linear-gradient(100deg,#239b56 0%,#4cc47f 55%,#9be5bc 100%);box-shadow:0 8px 24px rgba(34,160,90,.18)}
+.status.busy{background:linear-gradient(100deg,#2563eb 0%,#5b8ff5 60%,#a9c6fb 100%);box-shadow:0 8px 24px rgba(37,99,235,.18)}
+.status.off{background:var(--card);color:var(--fg);border:1px solid var(--line);box-shadow:none}
+.status .badge{width:56px;height:56px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.status .badge .ic{width:28px;height:28px;color:var(--ok)}
+.status.busy .badge .ic{color:var(--acc2)}
+.status.off .badge{background:var(--accbg)}.status.off .badge .ic{color:var(--mut)}
+.status .txt{flex:1;min-width:0}
+.status h2{margin:0;font-size:22px;font-weight:700}
+.status .l2{margin-top:4px;font-size:16px;opacity:.95;overflow-wrap:anywhere}
+.status .l3{margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px;opacity:.95}
+.status .l3 .ic{width:16px;height:16px}
+.status .note{margin-top:6px;font-size:13px;opacity:.85}
+.status.off .l2,.status.off .note{color:var(--mut)}
+.status>.bars{align-self:flex-start}
+.status .bars i{background:rgba(255,255,255,.45)}.status .bars i.on{background:#0f7a3c}
+.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- Bố cục ---------- */
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:24px;align-items:start}
+@media(max-width:880px){.grid{grid-template-columns:minmax(0,1fr)}}
+.toolbar{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:22px}
+.btn{display:flex;align-items:center;justify-content:center;gap:10px;height:56px;padding:0 18px;border-radius:12px;font-family:inherit;font-size:16px;font-weight:600;cursor:pointer;border:0}
+.btn .ic{width:22px;height:22px}
+.btn.primary{color:#fff;background:linear-gradient(180deg,#4b92fb,#3478f0);box-shadow:0 6px 16px rgba(59,130,246,.25)}
+.btn.outline{color:var(--acc2);background:var(--card);border:1px solid #d7e1ee}
+.btn:disabled{opacity:.55;cursor:default}
+.btn.sm{height:46px;font-size:15px}
+.btn.danger{color:var(--err);background:var(--card);border:1px solid #f1d0d0}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 4px 18px rgba(15,33,63,.04)}
+.list{padding:22px 20px}
+.lhead{display:flex;align-items:center;gap:18px;padding:0 4px 18px}
+.lhead .ic{width:40px;height:40px;color:#334155}
+.lhead h3,.mhead h3{margin:0;font-size:19px;font-weight:600}
+.lhead p,.mhead p{margin:3px 0 0;color:var(--mut);font-size:14px}
+
+/* ---------- Một mạng ---------- */
+.net{border:1px solid var(--line);border-radius:12px;margin-bottom:14px;background:var(--card);transition:border-color .15s}
+.net:hover{border-color:#c9d6e8}
+.net.cur{background:var(--okbg);border-color:var(--okline)}
+.nrow{display:flex;align-items:center;gap:18px;padding:14px 18px;cursor:pointer}
+.nico{width:56px;height:56px;border-radius:50%;background:var(--accbg);display:flex;align-items:center;justify-content:center;flex:none}
+.nico .ic{width:28px;height:28px;color:var(--acc)}
+.net.cur .nico{background:#dcf7e6}.net.cur .nico .ic{color:var(--ok)}
+.ninfo{flex:1;min-width:0}
+.nname{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.nname .ssid{font-size:16px;font-weight:600;overflow-wrap:anywhere}
+.tag{font-size:12px;font-weight:600;padding:2px 10px;border-radius:999px;color:#fff;background:#1f9d55}
+.tag.sv{background:var(--accbg);color:var(--acc2)}
+.nsub{display:flex;align-items:center;gap:8px;margin-top:4px;color:var(--mut);font-size:14px}
+.nsub .ic{width:16px;height:16px}
+.nright{display:flex;align-items:center;gap:14px;color:var(--mut);font-size:14px;flex:none}
+.nright .chev{width:18px;height:18px;transition:transform .15s}
+.net.open .chev{transform:rotate(90deg)}
+.bars{display:flex;align-items:flex-end;gap:3px;height:22px;flex:none}
+.bars i{width:5px;border-radius:2px;background:#cfdcf0}
+.bars i.on{background:var(--acc)}
+.net.cur .bars i.on{background:var(--ok)}
+.panel{display:none;flex-direction:column;gap:12px;padding:4px 18px 18px 92px}
+.net.open .panel{display:flex}
+@media(max-width:560px){.panel{padding-left:18px}.nrow{gap:12px;padding:12px}.nico{width:44px;height:44px}.nright .rssi{display:none}}
+.btns{display:flex;gap:10px}.btns .btn{flex:1}
+
+.info{display:flex;gap:12px;margin-top:6px;padding:14px 16px;border-radius:10px;background:#f1f6fd;color:#475569;font-size:13px}
+.info .ic{width:18px;height:18px;color:var(--acc2);margin-top:1px}
+.empty{padding:26px;text-align:center;color:var(--mut)}
+
+/* ---------- Form ---------- */
+.mhead{display:flex;gap:18px;padding:24px 24px 22px;background:#f1f6fd;border-radius:16px 16px 0 0;border-bottom:1px solid var(--line)}
+.mhead .ic{width:48px;height:48px;color:var(--acc2)}
+.mbody{display:flex;flex-direction:column;gap:12px;padding:22px 24px 24px}
+.lbl{font-weight:600;font-size:15px;margin-top:4px}
+.field{position:relative}
+.field>.ic{position:absolute;left:16px;top:50%;width:20px;height:20px;margin-top:-10px;color:#64748b;pointer-events:none}
+.field input{width:100%;height:52px;padding:0 48px 0 52px;border:1px solid #d7e1ee;border-radius:10px;font:inherit;font-size:15px;color:var(--fg);background:#fff;outline:none}
+.field input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(59,130,246,.15)}
+.eye{position:absolute;right:10px;top:50%;margin-top:-17px;width:34px;height:34px;border:0;background:none;color:#64748b;cursor:pointer;padding:6px}
+.chk{display:flex;align-items:center;gap:10px;font-size:15px;cursor:pointer;user-select:none}
+.chk input{width:20px;height:20px;margin:0;accent-color:var(--acc2)}
+
+#toast{display:none;margin:-8px 0 20px;padding:12px 16px;border-radius:10px;font-size:14px}
+#toast.info{display:block;background:var(--accbg);color:#1e3a8a}
+#toast.ok{display:block;background:#dcf7e6;color:#14532d}
+#toast.err{display:block;background:#fde8e8;color:#991b1b}
+
+footer{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:40px;color:#94a3b8;font-size:13px;flex-wrap:wrap}
+footer .ic{width:15px;height:15px;color:#94a3b8}
+@media(max-width:560px){h1{font-size:24px}.brand .ic{width:44px;height:44px}.toolbar{grid-template-columns:1fr;gap:12px}.status{padding:18px;gap:14px}.status>.bars{display:none}}
+</style></head><body><main>
+
+<header>
+  <div class="brand">
+    <span class="ic" data-i="wifi"></span>
+    <div><h1>Cấu hình WiFi</h1><p class="sub">Kết nối thiết bị với mạng WiFi của bạn</p></div>
+  </div>
+  <div class="apchip">
+    <span class="ic" data-i="chip"></span>
+    <div><b>ESP32 Access Point</b><span id="apname">GATEWAY</span></div>
+  </div>
+</header>
+
+<div class="status off" id="status"></div>
+<div id="toast"></div>
+
+<div class="grid">
+  <section>
+    <div class="toolbar">
+      <button class="btn primary" id="rescan"><span class="ic" data-i="refresh"></span><span id="rescanTxt"></span></button>
+      <button class="btn outline" id="manual"><span class="ic" data-i="plus"></span><span id="manualTxt"></span></button>
+    </div>
+    <div class="card list">
+      <div class="lhead">
+        <span class="ic" data-i="wifi"></span>
+        <div><h3 id="listTitle"></h3><p id="listCount"></p></div>
+      </div>
+      <div id="list"></div>
+      <div class="info"><span class="ic" data-i="info"></span><div id="hint"></div></div>
+    </div>
+  </section>
+
+  <aside class="card" id="manualCard">
+    <div class="mhead">
+      <span class="ic" data-i="wifiPlus"></span>
+      <div><h3 id="mTitle"></h3><p id="mDesc"></p></div>
+    </div>
+    <div class="mbody">
+      <div class="lbl" id="lSsid"></div>
+      <div class="field"><span class="ic" data-i="wifiSm"></span><input id="mSsid" type="text" maxlength="32" autocapitalize="off" autocomplete="off"></div>
+      <div class="lbl" id="lPass"></div>
+      <div id="mPassBox"></div>
+      <button class="btn primary" id="mGo" style="margin-top:6px"><span class="ic" data-i="plus"></span><span id="mGoTxt"></span></button>
+    </div>
+  </aside>
+</div>
+
+<footer><span id="foot1"></span><span>•</span><span id="foot2"></span><span class="ic" data-i="heart"></span></footer>
+
+</main>
+<script>
+/* ============================================================================
+   TẤT CẢ THÔNG BÁO / NHÃN HIỂN THỊ NẰM Ở ĐÂY - sửa chữ ở khối này là đủ.
+   ========================================================================== */
+const T = {
+  connected:   'Đã kết nối WiFi',
+  notConn:     'Chưa kết nối WiFi',
+  notConnSub:  'Chọn một mạng trong danh sách để Gateway kết nối Internet.',
+  connecting:  'Đang kết nối...',
+  signal:      'Cường độ tín hiệu: ',
+  stateLbl:    'Trạng thái: ',
+  good:        'Kết nối ổn định',
+  fair:        'Tín hiệu trung bình',
+  weak:        'Tín hiệu yếu',
+  gwNote:      'Đây là mạng của Gateway, không phải của máy bạn. Mạng đã được lưu, bạn có thể chuyển máy về WiFi của mình.',
+  scanning:    'Đang quét...',
+  rescan:      'Quét lại',
+  addManual:   'Thêm mạng thủ công',
+  listTitle:   'Danh sách mạng WiFi',
+  found:       n => 'Tìm thấy ' + n + ' mạng WiFi xung quanh',
+  noNetworks:  'Không thấy mạng nào',
+  tagCurrent:  'Đã kết nối',
+  tagSaved:    'Đã lưu',
+  hint1:       'Nhấn vào mạng để nhập mật khẩu và kết nối.',
+  hint2:       'Nếu mạng của bạn không hiển thị, hãy thử "Thêm mạng thủ công". Gateway chỉ dùng được WiFi 2.4 GHz.',
+  mTitle:      'Thêm mạng thủ công',
+  mDesc:       'Dành cho các mạng WiFi ẩn hoặc không hiển thị trong danh sách.',
+  lSsid:       'Tên mạng (SSID)',
+  lPass:       'Mật khẩu',
+  btnConnect:  'Kết nối',
+  btnForget:   'Quên mạng',
+  phSsid:      'Nhập tên WiFi...',
+  phPass:      'Nhập mật khẩu...',
+  phUser:      'Tên đăng nhập / tài khoản',
+  phIdentity:  'Danh tính ẩn danh (tuỳ chọn)',
+  lblShow:     'Hiển thị mật khẩu',
+  needSsid:    'Chưa nhập tên WiFi',
+  needUser:    'Chưa nhập tài khoản',
+  connTo:      s => 'Đang kết nối Gateway tới "' + s + '"...',
+  connOk:      (s, ip) => 'Gateway đã kết nối và lưu "' + s + '" (IP ' + ip + ')',
+  connFail:    e => 'Kết nối thất bại: ' + e,
+  forgot:      s => 'Đã quên "' + s + '"',
+  forgetAsk:   s => 'Quên mạng "' + s + '"?',
+  lostLink:    'Mất liên lạc với Gateway, thường do Gateway đổi kênh WiFi khi nối mạng. Hãy kết nối lại vào mạng GATEWAY nếu máy không tự nối lại...',
+  busy:        'Gateway đang bận kết nối, thử lại sau giây lát',
+  reqFail:     'Không gửi được yêu cầu',
+  foot1:       'Được tạo bởi ESP32',
+  foot2:       'Kết nối mọi thứ, đơn giản hơn!'
+};
+/* ========================================================================== */
+
+const S = 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+const ICON = {
+  wifi:    '<svg viewBox="0 0 24 24" ' + S + ' stroke-width="2.4"><path d="M2.5 8.8a14 14 0 0 1 19 0"/><path d="M5.8 12.4a9.2 9.2 0 0 1 12.4 0"/><path d="M9.1 15.9a4.5 4.5 0 0 1 5.8 0"/><circle cx="12" cy="19.3" r="1.5" fill="currentColor" stroke="none"/></svg>',
+  wifiSm:  '<svg viewBox="0 0 24 24" ' + S + '><path d="M3 9.5a13 13 0 0 1 18 0"/><path d="M6.5 13a8 8 0 0 1 11 0"/><path d="M10 16.5a3.2 3.2 0 0 1 4 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/></svg>',
+  wifiPlus:'<svg viewBox="0 0 24 24" ' + S + ' stroke-width="2.2"><path d="M2 8.5a14 14 0 0 1 18 -.5"/><path d="M5.3 12a9 9 0 0 1 11 -1"/><path d="M8.7 15.4a4.5 4.5 0 0 1 4.3 -1"/><circle cx="11" cy="19" r="1.5" fill="currentColor" stroke="none"/><path d="M19 14v7M15.5 17.5h7"/></svg>',
+  chip:    '<svg viewBox="0 0 24 24" ' + S + ' stroke-width="1.6"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" fill-opacity=".85"/><path d="M9 2v3M12 2v3M15 2v3M9 19v3M12 19v3M15 19v3M2 9h3M2 12h3M2 15h3M19 9h3M19 12h3M19 15h3"/></svg>',
+  check:   '<svg viewBox="0 0 24 24" ' + S + ' stroke-width="3"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  sync:    '<svg viewBox="0 0 24 24" ' + S + ' stroke-width="2.6"><path d="M21 12a9 9 0 1 1-3-6.7"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" ' + S + ' stroke-width="2.2"><path d="M20 11a8 8 0 0 0-14.3-4.3L4 8.5"/><path d="M4 4v4.5h4.5"/><path d="M4 13a8 8 0 0 0 14.3 4.3L20 15.5"/><path d="M20 20v-4.5h-4.5"/></svg>',
+  plus:    '<svg viewBox="0 0 24 24" ' + S + ' stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>',
+  lock:    '<svg viewBox="0 0 24 24" ' + S + '><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1" fill="currentColor"/></svg>',
+  unlock:  '<svg viewBox="0 0 24 24" ' + S + '><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 7.7-1.5"/></svg>',
+  chev:    '<svg viewBox="0 0 24 24" ' + S + ' stroke-width="2.2"><path d="M9 6l6 6-6 6"/></svg>',
+  info:    '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M12 11v6" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="7.5" r="1.3" fill="#fff"/></svg>',
+  eye:     '<svg viewBox="0 0 24 24" ' + S + '><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff:  '<svg viewBox="0 0 24 24" ' + S + '><path d="M3 3l18 18"/><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+  user:    '<svg viewBox="0 0 24 24" ' + S + '><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+  heart:   '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 21s-7.5-4.6-9.6-9.2C.9 8.5 3 4.5 6.8 4.5c2.1 0 3.6 1.2 4.4 2.5.8-1.3 2.3-2.5 4.4-2.5 3.8 0 5.9 4 4.4 7.3C19.5 16.4 12 21 12 21z"/></svg>'
+};
+
+const $ = id => document.getElementById(id);
+// Chỉ dùng textContent cho dữ liệu từ thiết bị (SSID do bất kỳ ai phát ra) - không bao giờ innerHTML.
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const icon = (name, cls) => { const s = el('span', 'ic' + (cls ? ' ' + cls : '')); s.innerHTML = ICON[name]; return s; };
+document.querySelectorAll('[data-i]').forEach(e => { e.innerHTML = ICON[e.dataset.i]; });
+
+let openSsid = null, awaiting = null, nets = [], lostShown = false, curSsid = '';
+
+function toast(text, cls) { const t = $('toast'); t.textContent = text || ''; t.className = text ? cls : ''; }
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', body: new URLSearchParams(body) } : undefined);
+  return r.json();
+}
+
+function level(rssi) { return rssi == null ? 0 : rssi >= -60 ? 4 : rssi >= -70 ? 3 : rssi >= -80 ? 2 : 1; }
+function bars(rssi) {
+  const n = level(rssi), b = el('div', 'bars');
+  for (let i = 1; i <= 4; i++) { const e = el('i', i <= n ? 'on' : ''); e.style.height = (4 + 4.5 * i) + 'px'; b.appendChild(e); }
+  return b;
+}
+function quality(rssi) { return rssi >= -75 ? T.good : rssi >= -85 ? T.fair : T.weak; }
+
+/* Ô mật khẩu có icon khoá + nút mắt + ô "Hiển thị mật khẩu" (hai nút cùng điều khiển). */
+function passField() {
+  const wrap = el('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:12px';
+  const f = el('div', 'field');
+  const i = el('input'); i.type = 'password'; i.placeholder = T.phPass; i.autocomplete = 'off';
+  const eye = el('button', 'eye'); eye.type = 'button';
+  const l = el('label', 'chk'); const cb = el('input'); cb.type = 'checkbox';
+  const set = show => { i.type = show ? 'text' : 'password'; cb.checked = show; eye.innerHTML = ICON[show ? 'eye' : 'eyeOff']; };
+  eye.onclick = () => set(i.type === 'password');
+  cb.onchange = () => set(cb.checked);
+  set(false);
+  f.append(icon('lock'), i, eye);
+  l.append(cb, el('span', '', T.lblShow));
+  wrap.append(f, l);
+  return { wrap, input: i };
+}
+function textField(ic, ph) {
+  const f = el('div', 'field'); const i = el('input'); i.type = 'text'; i.placeholder = ph; i.autocapitalize = 'off'; i.autocomplete = 'off';
+  f.append(icon(ic), i); return { wrap: f, input: i };
+}
+function btn(cls, ic, text) { const b = el('button', 'btn sm ' + cls); if (ic) b.appendChild(icon(ic)); b.appendChild(el('span', '', text)); return b; }
+
+/* ---------- Trạng thái kết nối ---------- */
+function renderState(s) {
+  if (s.ap) $('apname').textContent = s.ap;
+  curSsid = s.connected ? s.ssid : '';
+  const c = $('status'); c.textContent = '';
+  const badge = el('div', 'badge'), txt = el('div', 'txt');
+  if (s.state === 'connecting') {
+    c.className = 'status busy';
+    badge.appendChild(icon('sync', 'spin'));
+    txt.append(el('h2', '', T.connecting));
+    if (awaiting) txt.append(el('div', 'l2', '"' + awaiting + '"'));
+    c.append(badge, txt);
+  } else if (s.connected) {
+    c.className = 'status';
+    badge.appendChild(icon('check'));
+    const l2 = el('div', 'l2'); l2.append(el('b', '', '"' + s.ssid + '"'), ' (IP: ' + s.ip + ')');
+    const l3 = el('div', 'l3');
+    const q = el('span'); q.append(T.stateLbl, el('b', '', quality(s.rssi)));
+    l3.append(icon('wifiSm'), el('span', '', T.signal + s.rssi + ' dBm'), el('span', '', '•'), q);
+    txt.append(el('h2', '', T.connected), l2, l3, el('div', 'note', T.gwNote));
+    c.append(badge, txt, bars(s.rssi));
+  } else {
+    c.className = 'status off';
+    badge.appendChild(icon('wifi'));
+    txt.append(el('h2', '', T.notConn), el('div', 'l2', T.notConnSub));
+    c.append(badge, txt);
+  }
+}
+
+async function pollState() {
+  try {
+    const s = await api('/api/state');
+    const was = curSsid;
+    renderState(s);
+    if (was !== curSsid && !awaiting) render();
+    if (lostShown) { lostShown = false; if (!awaiting) toast(''); }
+    if (awaiting && s.state !== 'connecting') {
+      const ssid = awaiting; awaiting = null;
+      if (s.state === 'ok') { toast(T.connOk(ssid, s.ip), 'ok'); openSsid = null; }
+      else toast(T.connFail(s.error || '?'), 'err');
+      loadList(false);
+    }
+  } catch (e) {
+    if (awaiting) { lostShown = true; toast(T.lostLink, 'info'); }
+  }
+}
+
+/* ---------- Kết nối / quên ---------- */
+async function doConnect(ssid, body) {
+  toast(T.connTo(ssid), 'info');
+  try {
+    const j = await api('/api/connect', body);
+    if (!j.ok) { toast(j.error === 'busy' ? T.busy : T.reqFail, 'err'); return; }
+    awaiting = ssid;
+    pollState();
+  } catch (e) { toast(T.reqFail, 'err'); }
+}
+
+async function doForget(ssid) {
+  if (!confirm(T.forgetAsk(ssid))) return;
+  try { await api('/api/forget', { ssid }); toast(T.forgot(ssid), 'ok'); } catch (e) { toast(T.reqFail, 'err'); }
+  openSsid = null; loadList(false); pollState();
+}
+
+/* ---------- Danh sách mạng ---------- */
+function buildPanel(n) {
+  const p = el('div', 'panel');
+  if (n.saved) {
+    const b = el('div', 'btns');
+    if (!n.current) {
+      const c = btn('primary', 'wifiSm', T.btnConnect);
+      c.onclick = () => doConnect(n.ssid, { ssid: n.ssid, use_saved: '1' });
+      b.appendChild(c);
+    }
+    const f = btn('danger', null, T.btnForget); f.onclick = () => doForget(n.ssid);
+    b.appendChild(f);
+    p.appendChild(b);
+    return p;
+  }
+  let user, ident;
+  if (n.ent) {
+    user = textField('user', T.phUser); ident = textField('user', T.phIdentity);
+    p.append(user.wrap, ident.wrap);
+  }
+  const pw = n.sec || n.ent ? passField() : null;
+  if (pw) p.appendChild(pw.wrap);
+  const c = btn('primary', 'wifiSm', T.btnConnect);
+  c.onclick = () => {
+    if (n.ent && !user.input.value.trim()) { toast(T.needUser, 'err'); return; }
+    const body = { ssid: n.ssid, pass: pw ? pw.input.value : '' };
+    if (n.ent) { body.eap = '1'; body.identity = ident.input.value.trim(); body.username = user.input.value.trim(); }
+    doConnect(n.ssid, body);
+  };
+  p.appendChild(c);
+  return p;
+}
+
+function authText(n) { return n.auth || (n.ent ? 'WPA2-Enterprise' : n.sec ? 'Bảo mật' : 'Mạng mở'); }
+
+function render() {
+  const l = $('list'); l.textContent = '';
+  $('listCount').textContent = T.found(nets.length);
+  if (!nets.length) { l.appendChild(el('div', 'empty', T.noNetworks)); return; }
+  nets.forEach(n => {
+    const w = el('div', 'net' + (n.current ? ' cur' : '') + (openSsid === n.ssid ? ' open' : ''));
+    const r = el('div', 'nrow');
+    const ico = el('div', 'nico'); ico.appendChild(icon('wifi'));
+    const info = el('div', 'ninfo');
+    const nm = el('div', 'nname'); nm.appendChild(el('span', 'ssid', n.ssid));
+    if (n.current) nm.appendChild(el('span', 'tag', T.tagCurrent));
+    else if (n.saved) nm.appendChild(el('span', 'tag sv', T.tagSaved));
+    const sub = el('div', 'nsub');
+    sub.append(icon(n.sec || n.ent ? 'lock' : 'unlock'), el('span', '', authText(n)));
+    info.append(nm, sub);
+    const right = el('div', 'nright');
+    right.appendChild(el('span', 'rssi', n.rssi + ' dBm'));
+    right.append(bars(n.rssi), icon('chev', 'chev'));
+    r.append(ico, info, right);
+    r.onclick = () => { openSsid = openSsid === n.ssid ? null : n.ssid; render(); };
+    w.append(r, buildPanel(n));
+    l.appendChild(w);
+  });
+}
+
+function setScanning(on) {
+  $('rescanTxt').textContent = on ? T.scanning : T.rescan;
+  $('rescan').firstElementChild.classList.toggle('spin', on);
+}
+
+async function loadList(rescan) {
+  for (let i = 0; i < 12; i++) {
+    try {
+      const j = await api('/api/scan' + (rescan && i === 0 ? '?rescan=1' : ''));
+      nets = j.networks;
+      // Không vẽ lại khi đang gõ mật khẩu trong danh sách (sẽ mất chữ đã nhập).
+      const a = document.activeElement;
+      if (!(a && a.tagName === 'INPUT' && $('list').contains(a))) render();
+      setScanning(j.scanning);
+      if (!j.scanning) return;
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  setScanning(false);
+}
+
+/* ---------- Thêm mạng thủ công (mạng ẩn / Enterprise) ---------- */
+const mPw = passField();
+$('mPassBox').appendChild(mPw.wrap);
+$('mGo').onclick = () => {
+  const s = $('mSsid').value.trim();
+  if (!s) { toast(T.needSsid, 'err'); return; }
+  const body = { ssid: s, pass: mPw.input.value };
+  doConnect(s, body);
+};
+
+/* ---------- Gắn chữ + sự kiện ---------- */
+[['listTitle', 'listTitle'], ['manualTxt', 'addManual'], ['mTitle', 'mTitle'], ['mDesc', 'mDesc'], ['lSsid', 'lSsid'],
+ ['lPass', 'lPass'], ['mGoTxt', 'btnConnect'], ['foot1', 'foot1'], ['foot2', 'foot2']]
+  .forEach(([id, k]) => { $(id).textContent = T[k]; });
+$('hint').append(el('div', '', T.hint1), el('div', '', T.hint2));
+$('mSsid').placeholder = T.phSsid;
+$('listCount').textContent = T.scanning;
+setScanning(true);
+$('rescan').onclick = () => { setScanning(true); loadList(true); };
+$('manual').onclick = () => { $('manualCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('mSsid').focus({ preventScroll: true }); };
+
+pollState();
+setInterval(pollState, 2000);
+loadList(true);
+</script></body></html>

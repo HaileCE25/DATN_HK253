@@ -10,9 +10,6 @@ constexpr size_t LCD_LINE_BUF = LCD_COLS + 1;
 
 struct LcdState
 {
-    LcdLinkState wifi;
-    LcdLinkState firebase;
-
     bool             hasCarStatus;
     CarStatusPayload car;
     uint32_t         lastCarStatusMs;
@@ -44,18 +41,6 @@ static void PadLine(char* line)
     memset(line + len, ' ', LCD_COLS - len);
     line[LCD_COLS] = '\0';
 }
-
-#if defined(IS_GATEWAY)
-static const char* LinkLabel(LcdLinkState s)
-{
-    switch (s)
-    {
-    case LCD_LINK_OK:   return "OK";
-    case LCD_LINK_FAIL: return "NG";
-    default:            return "..";
-    }
-}
-#endif
 
 // Tối đa 7 ký tự
 static const char* BleLabel(uint8_t ble)
@@ -105,21 +90,12 @@ static void BuildLines(const LcdState& st, uint32_t now, char lines[LCD_ROWS][LC
     {
         memcpy(lines, st.msg, sizeof(st.msg));
     }
-#if defined(IS_GATEWAY)
-    // Gateway: status đến qua CAN -> có thể mất (car tắt / đứt bus)
-    else if (!st.hasCarStatus || (now - st.lastCarStatusMs) > LCD_CAR_OFFLINE_MS)
-    {
-        snprintf(lines[0], LCD_LINE_BUF, "CAR OFFLINE %-4s", lock);
-        snprintf(lines[1], LCD_LINE_BUF, "WiFi:%s FB:%s", LinkLabel(st.wifi), LinkLabel(st.firebase));
-    }
-#else
-    // Car: status lấy tại chỗ, chỉ thiếu trong ~100ms đầu sau boot
+    // Status lấy tại chỗ, chỉ thiếu trong ~100ms đầu sau boot
     else if (!st.hasCarStatus)
     {
         snprintf(lines[0], LCD_LINE_BUF, "CAR ECU     %-4s", lock);
         snprintf(lines[1], LCD_LINE_BUF, "Starting...");
     }
-#endif
     else
     {
         char dist[8];
@@ -210,22 +186,22 @@ static void TaskLcd(void* pvParameters)
                 {
                     s_addr = found;
                     InitLcdController();
-                    LOG_PRINTF("[LCD] LCD 1602 I2C OK tai 0x%02X (SDA=%d SCL=%d)\n",
-                               s_addr, LCD_SDA_PIN, LCD_SCL_PIN);
+                    // LOG_PRINTF("[LCD] LCD 1602 I2C OK tai 0x%02X (SDA=%d SCL=%d)\n",
+                    //            s_addr, LCD_SDA_PIN, LCD_SCL_PIN);
                     connected = true;
                     loggedMissing = false;
                     logNextRender = true;
                 }
                 else if (!loggedMissing)
                 {
-                    LOG_PRINTF("[LCD ERROR] Khong tim thay LCD tai 0x%02X/0x%02X (SDA=%d SCL=%d) - kiem tra day/nguon, se thu lai\n",
+                    LOG_PRINTF("[LCD ERROR] Khong tim thay LCD tai 0x%02X/0x%02X (SDA=%d SCL=%d)\n",
                                LCD_I2C_ADDR_PRIMARY, LCD_I2C_ADDR_SECONDARY, LCD_SDA_PIN, LCD_SCL_PIN);
                     loggedMissing = true;
                 }
             }
             else if (!ProbeLcd())
             {
-                LOG_PRINTF("[LCD ERROR] Mat ket noi I2C tai 0x%02X - cho LCD quay lai\n", s_addr);
+                LOG_PRINTF("[LCD ERROR] Mat ket noi I2C tai 0x%02X, cho LCD quay lai\n", s_addr);
                 connected = false;
                 loggedMissing = true;
             }
@@ -281,20 +257,6 @@ bool LCD_Init()
 
     s_started = true;
     return true;
-}
-
-void LCD_SetWifiState(LcdLinkState state)
-{
-    taskENTER_CRITICAL(&s_mux);
-    s_state.wifi = state;
-    taskEXIT_CRITICAL(&s_mux);
-}
-
-void LCD_SetFirebaseState(LcdLinkState state)
-{
-    taskENTER_CRITICAL(&s_mux);
-    s_state.firebase = state;
-    taskEXIT_CRITICAL(&s_mux);
 }
 
 void LCD_SetCarStatus(const CarStatusPayload& status)

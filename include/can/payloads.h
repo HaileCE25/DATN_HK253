@@ -11,18 +11,41 @@
 // thuộc uart/ (2 subsystem tách biệt, dù wire format giống nhau vì cùng
 // mô tả 1 nghiệp vụ KEY_ROOT provisioning).
 
-constexpr size_t KEY_REQUEST_PAYLOAD_SIZE = 16;
-constexpr size_t KEY_RESPONSE_PAYLOAD_SIZE = 33;
+constexpr size_t KEY_REQUEST_PAYLOAD_SIZE = 17;
+constexpr size_t KEY_RESPONSE_PAYLOAD_SIZE = 38;
 
+// expire_unix = 0: Gateway không có thông tin hạn (Firebase chưa có expire_time
+// hoặc không đọc được). Car coi là "không rõ", không phải "không bao giờ hết hạn".
+constexpr uint32_t KEY_EXPIRE_UNKNOWN = 0;
+
+// Trạng thái quyền dùng key của xe, Gateway xác định từ /Bookings.
+// KEY_STATUS_REVOKED: tra cứu THÀNH CÔNG nhưng xe không còn booking ACTIVE
+// (admin thu hồi -> REVOKED, hoặc chưa/không còn booking). Khi đó key_root
+// trong payload để toàn 0, Car phải xoá key đang giữ và huỷ phiên.
+// Tra cứu lỗi (mất mạng, Firebase lỗi) thì Gateway KHÔNG trả lời - Car coi
+// là "không rõ" và giữ nguyên key cũ, không coi là bị thu hồi.
+constexpr uint8_t KEY_STATUS_OK      = 0x00;
+constexpr uint8_t KEY_STATUS_REVOKED = 0x01;
+
+// Wire format:  [0..15]  car_id (kết thúc '\0')
+//               [16]     revalidate: 1 = lượt Car hỏi lại định kỳ khi đã có key
+//                        (Gateway xử lý y hệt, chỉ không in log/debug)
 struct KeyRequestPayload
 {
     char car_id[16];
+    bool revalidate;
 };
 
+// Wire format:  [0..31]  key_root
+//               [32]     key_len
+//               [33..36] expire_unix (UTC), little-endian
+//               [37]     status: KEY_STATUS_*
 struct KeyResponsePayload
 {
-    uint8_t key_root[32];
-    uint8_t key_len;
+    uint8_t  key_root[32];
+    uint8_t  key_len;
+    uint32_t expire_unix;
+    uint8_t  status;
 };
 
 bool SerializeKeyRequest(

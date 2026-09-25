@@ -25,6 +25,12 @@ extern UwbTimestampData_t timestamp_data;
 //  PHẦN A — FSM TX (port từ reference/dw3000_tx.cpp, KHÔNG đổi thuật toán)
 // =============================================================================
 
+// TX antenna delay (đơn vị 15,65 ps, TX_ANTD 0x01:0x04). Mặc định 16385 = nhà sản xuất.
+// Hiệu chuẩn khoảng cách hiện chỉnh ở phía Car (env:car); giữ mặc định ở Keyfob.
+#ifndef UWB_ANT_DELAY_TX
+#define UWB_ANT_DELAY_TX 16385
+#endif
+
 #ifndef UWB_INIT_MAX_HARDRESET_RETRY
 #define UWB_INIT_MAX_HARDRESET_RETRY 5
 #endif
@@ -100,7 +106,7 @@ static bool txCoreInit()
     DW3000.write(0x0e, 0x12, tx_fctrl_val, 3);
     DW3000.write(0x0e, 0x16, 0x9b, 1);
     DW3000.configureAsTX();          // Configure basic settings for frame transmitting
-    DW3000.setTXAntennaDelay(16385); // set default antenna delay
+    DW3000.setTXAntennaDelay(UWB_ANT_DELAY_TX); // antenna delay (xem UWB_ANT_DELAY_TX)
 
     DW3000.InitCrypto();
     delay(2000);

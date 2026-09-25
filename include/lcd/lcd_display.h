@@ -5,15 +5,14 @@
 #include "can/payloads.h"
 
 // -----------------------------------------------------------------------------
-// LCD Display (car hoặc gateway - build được cho cả 2, xem lcd_config.h)
+// LCD Display (chỉ car, xem lcd_config.h)
 // -----------------------------------------------------------------------------
 // Hiển thị trạng thái hệ thống lên LCD 1602 I2C:
 //
-//   Màn hình chính:          Gateway, car offline:
-//   +----------------+       +----------------+
-//   |BLE AUTH OK LOCK|       |CAR OFFLINE LOCK|
-//   |UWB  0.75m HOLD |       |WiFi:OK FB:OK   |
-//   +----------------+       +----------------+
+//   +----------------+
+//   |BLE AUTH OK LOCK|
+//   |UWB  0.75m HOLD |
+//   +----------------+
 //
 // Mô hình: các hàm LCD_Set*() chỉ cập nhật 1 struct trạng thái (critical
 // section ngắn, gọi được từ bất kỳ task nào); 1 task riêng khởi tạo I2C,
@@ -22,26 +21,14 @@
 //
 // Không có LCD thì các hàm Set*() vẫn gọi an toàn (chỉ cập nhật state).
 
-enum LcdLinkState : uint8_t
-{
-    LCD_LINK_PENDING = 0, // đang kết nối  -> ".."
-    LCD_LINK_OK,          //               -> "OK"
-    LCD_LINK_FAIL,        //               -> "NG"
-};
-
 // Tạo task LCD (task tự Wire.begin + dò địa chỉ + init, không block).
 // Trả false chỉ khi không tạo được task. Gọi 1 lần trong setup().
 bool LCD_Init();
 
-// Chỉ gateway hiển thị (car không dùng mạng).
-void LCD_SetWifiState(LcdLinkState state);
-void LCD_SetFirebaseState(LcdLinkState state);
-
-// Gateway: gọi khi nhận CAN_ID_CAR_STATUS hợp lệ (làm mới mốc online).
-// Car: gọi định kỳ với trạng thái tại chỗ.
+// Gọi định kỳ với trạng thái tại chỗ của car.
 void LCD_SetCarStatus(const CarStatusPayload& status);
 
-// Gateway: trạng thái actuator đã thi hành. Car: lệnh lock/unlock đã gửi thành công.
+// Lệnh lock/unlock đã gửi thành công.
 void LCD_SetLockState(bool unlocked);
 
 // Hiện thông báo tạm thời (đè màn hình chính) trong durationMs.

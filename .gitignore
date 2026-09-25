@@ -14,3 +14,7 @@ logs/
 *.bak
 Claude outputs/
 *.lnk
+
+# Python cache
+__pycache__/
+*.pyc

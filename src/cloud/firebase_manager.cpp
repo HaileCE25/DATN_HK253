@@ -16,7 +16,7 @@ bool Firebase_Init()
 
     if (!WiFi_IsConnected())
     {
-        LOG_PRINTLN("[FIREBASE ERROR] WiFi not connected - call WiFi_Connect() first");
+        LOG_PRINTLN("[FIREBASE ERROR] WiFi not connected");
         return false;
     }
 
@@ -57,7 +57,41 @@ bool Firebase_ReadString(const char* path, String& outValue)
         return true;
     }
 
-    LOG_PRINTF("[FIREBASE ERROR] Read failed at %s: %s\n", path, s_fbdo.errorReason().c_str());
+    // Path không tồn tại không phải lỗi kết nối - có thể là field tuỳ chọn
+    // (vd. expire_time). Nơi gọi tự quyết định có log hay không.
+    if (s_fbdo.httpCode() != FIREBASE_ERROR_PATH_NOT_EXIST)
+        LOG_PRINTF("[FIREBASE ERROR] Read failed at %s: %s\n", path, s_fbdo.errorReason().c_str());
+    return false;
+}
+
+bool Firebase_QueryEqualTo(const char* path, const char* child, const char* value, String& outJson)
+{
+    if (!s_ready)
+        return false;
+
+    QueryFilter query;
+    query.orderBy(child);
+    query.equalTo(value);
+
+    bool ok = Firebase.RTDB.getJSON(&s_fbdo, path, &query);
+    query.clear();
+
+    if (ok)
+    {
+        outJson = s_fbdo.payload();
+        return true;
+    }
+
+    // Path chưa tồn tại: RTDB trả null, thư viện báo lỗi "type mismatch" nhưng
+    // thực chất là "không có node nào khớp".
+    if (s_fbdo.httpCode() == 200 && s_fbdo.dataTypeEnum() == firebase_rtdb_data_type_null)
+    {
+        outJson = "{}";
+        return true;
+    }
+
+    LOG_PRINTF("[FIREBASE ERROR] Query failed at %s (%s == %s): %s\n",
+               path, child, value, s_fbdo.errorReason().c_str());
     return false;
 }
 

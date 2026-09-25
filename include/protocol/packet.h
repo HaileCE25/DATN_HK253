@@ -13,6 +13,7 @@ enum AuthFailReason : uint8_t
     AUTH_FAIL_REASON_CAR_ID_MISMATCH = 1,  // VĨNH VIỄN - dừng hẳn
     AUTH_FAIL_REASON_HMAC_INVALID = 2,     // Có thể tự hết - vẫn thử lại
     AUTH_FAIL_REASON_INVALID_LENGTH = 3,   // Có thể tự hết - vẫn thử lại
+    AUTH_FAIL_REASON_KEY_REVOKED = 4,      // Admin thu hồi booking - vẫn thử lại (có thể được cấp lại)
 };
 
 enum PacketType : uint8_t

@@ -1378,7 +1378,7 @@ void DW3000Class::setPHRRate(uint8_t data) {
 }
 
 void DW3000Class::setTXAntennaDelay(int delay) {
-  antenna_delay = 16385;
+  antenna_delay = delay; // trước đây bị ghi cứng 16385, bỏ qua tham số -> không hiệu chuẩn được
   write(0x01, 0x04, antenna_delay, 2);
   // write(0x0e, 0x00, antenna_delay, 2);
 }
@@ -1601,9 +1601,20 @@ void DW3000Class::DistanceCal() {
   lRound_u64 = (lRound1_u32 * lRound2_u64);
   lReply_u64 = (lReply2_u64 * lReply1_u64);
 
-  if (lRound_u64 >= lReply_u64) {
-    tof = uint16_t((lRound_u64 - lReply_u64) / (lRound1_u32 + lRound2_u64 + lReply2_u64 + lReply1_u64));
+  // Round có timestamp hỏng (lRound < lReply, mẫu số 0, hoặc tof tràn uint16) phải BỎ:
+  // KHÔNG được để `tof` (static) giữ giá trị cũ rồi vẫn tăng counter_dis, vì khi đó
+  // measure_once_cm() coi giá trị cũ là mẫu mới -> khoảng cách lặp y hệt / số vô lý (vd 213 m).
+  uint64_t tofDenom = lRound1_u32 + lRound2_u64 + lReply2_u64 + lReply1_u64;
+  if ((lRound_u64 < lReply_u64) || (tofDenom == 0)) {
+    if (UWB_DEBUG) Serial.println("DS-TWR: timestamp hong (lRound < lReply hoac mau so 0) -> bo round");
+    return;
   }
+  uint64_t tofRaw = (lRound_u64 - lReply_u64) / tofDenom;
+  if (tofRaw > 0xFFFF) {
+    if (UWB_DEBUG) Serial.println("DS-TWR: tof tran uint16 -> bo round");
+    return;
+  }
+  tof = (long long)tofRaw;
   finaldata_data.distance = (tof * (1.0 / 499.2e6 / 128.0) * 299702547) * 100;
   counter_dis++;
   lDistanceold = finaldata_data.distance;

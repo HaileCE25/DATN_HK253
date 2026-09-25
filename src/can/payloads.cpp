@@ -12,8 +12,11 @@ bool SerializeKeyRequest(
     if (buffer_capacity < KEY_REQUEST_PAYLOAD_SIZE)
         return false;
 
+    constexpr size_t carIdSize = sizeof(payload.car_id);
+
     memset(buffer, 0, KEY_REQUEST_PAYLOAD_SIZE);
-    strncpy((char*)buffer, payload.car_id, KEY_REQUEST_PAYLOAD_SIZE - 1);
+    strncpy((char*)buffer, payload.car_id, carIdSize - 1);
+    buffer[carIdSize] = payload.revalidate ? 1 : 0;
 
     return true;
 }
@@ -29,8 +32,11 @@ bool DeserializeKeyRequest(
     if (buffer_length != KEY_REQUEST_PAYLOAD_SIZE)
         return false;
 
-    memcpy(payload.car_id, buffer, KEY_REQUEST_PAYLOAD_SIZE);
-    payload.car_id[KEY_REQUEST_PAYLOAD_SIZE - 1] = '\0';
+    constexpr size_t carIdSize = sizeof(payload.car_id);
+
+    memcpy(payload.car_id, buffer, carIdSize);
+    payload.car_id[carIdSize - 1] = '\0';
+    payload.revalidate = buffer[carIdSize] != 0;
 
     return true;
 }
@@ -52,6 +58,11 @@ bool SerializeKeyResponse(
     memcpy(buffer, payload.key_root, 32);
     buffer[32] = payload.key_len;
 
+    for (int i = 0; i < 4; i++)
+        buffer[33 + i] = (uint8_t)((payload.expire_unix >> (8 * i)) & 0xFF);
+
+    buffer[37] = payload.status;
+
     return true;
 }
 
@@ -72,6 +83,14 @@ bool DeserializeKeyResponse(
 
     memcpy(payload.key_root, buffer, 32);
     payload.key_len = keyLen;
+
+    payload.expire_unix = 0;
+    for (int i = 0; i < 4; i++)
+        payload.expire_unix |= (uint32_t)buffer[33 + i] << (8 * i);
+
+    if (buffer[37] != KEY_STATUS_OK && buffer[37] != KEY_STATUS_REVOKED)
+        return false;
+    payload.status = buffer[37];
 
     return true;
 }

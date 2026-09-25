@@ -12,8 +12,10 @@ bool TWAI_Init()
 
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
         TWAI_TX_PIN, TWAI_RX_PIN, TWAI_MODE_NORMAL);
-
-    LOG_PRINTF("[CAN DEBUG] TX_PIN=%d RX_PIN=%d MODE=NORMAL\n", (int)TWAI_TX_PIN, (int)TWAI_RX_PIN);
+    // Mặc định 5 frame. Gateway có thể kẹt 1-2 s trong lời gọi Firebase (tra
+    // booking mỗi lần Car hỏi lại key); CarStatus đổ vào tới ~10 frame/s sẽ làm
+    // tràn queue và rơi mất ActuatorCmd đến cùng lúc.
+    g_config.rx_queue_len = 32;
 
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();

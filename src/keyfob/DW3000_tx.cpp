@@ -1207,7 +1207,7 @@ void DW3000Class::setPHRRate(uint8_t data) {
 }
 
 void DW3000Class::setTXAntennaDelay(int delay) {
-  antenna_delay = 16385;
+  antenna_delay = delay; // trước đây bị ghi cứng 16385, bỏ qua tham số -> không hiệu chuẩn được
   write(0x01, 0x04, antenna_delay, 2);
   //write(0x0e, 0x00, antenna_delay, 3);
 }
