@@ -29,6 +29,10 @@ struct WifiStatus
     char          error[64]; // lý do khi state == WIFI_CS_FAIL
 };
 
+// TẠM THỜI: nối mạng gán cứng WIFI_SSID (STA-only, không AP/portal), blocking
+// tối đa WIFI_CONNECT_TIMEOUT_MS. Trả false nếu hết timeout. Dùng THAY WiFi_Start().
+bool WiFi_Connect();
+
 // Bật AP + portal + task WiFi, KHÔNG blocking. Gọi 1 lần trong setup().
 void WiFi_Start();
 

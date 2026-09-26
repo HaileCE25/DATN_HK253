@@ -209,6 +209,38 @@ static void WiFiTask(void *)
 // -----------------------------------------------------------------------------
 // API
 // -----------------------------------------------------------------------------
+bool WiFi_Connect()
+{
+    if (!s_mu)
+        s_mu = xSemaphoreCreateMutex(); // WiFi_IsConnecting() vẫn gọi được
+
+    LOG_PRINTF("[WIFI] Connecting to %s", WIFI_SSID);
+
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true); // driver tự nối lại khi rớt mạng
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    uint32_t startTime = millis();
+
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        if (millis() - startTime > WIFI_CONNECT_TIMEOUT_MS)
+        {
+            Serial.println();
+            LOG_PRINTLN("[WIFI ERROR] Connect timeout");
+            return false;
+        }
+        Serial.print(".");
+        delay(300);
+    }
+
+    Serial.println();
+    LOG_PRINTF("[WIFI] Connected, IP: %s, DNS: %s\n",
+               WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
+    return true;
+}
+
 void WiFi_Start()
 {
     s_mu = xSemaphoreCreateMutex();

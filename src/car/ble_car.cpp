@@ -27,6 +27,12 @@ static uint32_t cooldownUntil = 0;
 // giải mã được (không có key_root, nhưng vẫn thấy được luồng trao
 // đổi). Đã xác nhận qua thực nghiệm bằng nRF Connect.
 static bool s_hasActiveConnection = false;
+static volatile uint32_t s_connectMs = 0;
+
+uint32_t BLE_Car_GetConnectMs()
+{
+    return s_connectMs;
+}
 
 /*==================== CALLBACK ====================*/
 
@@ -45,6 +51,7 @@ class ServerCallbacks : public NimBLEServerCallbacks
         }
 
         s_hasActiveConnection = true;
+        s_connectMs = millis();
 
         deviceConnected = true;
         advertising = false; // NimBLE tự dừng advertising khi có connection

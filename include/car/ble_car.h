@@ -32,3 +32,7 @@ bool BLE_Car_Disconnect();
 //        sau khi verify HMAC đúng -> CAR_AUTHENTICATED.
 void BLE_Car_SetState(CarState newState);
 CarState BLE_Car_GetState();
+
+// millis() lúc kết nối BLE thành công gần nhất (onConnect) - dùng đo thời gian
+// từ connect tới auth xong / bắt đầu ranging.
+uint32_t BLE_Car_GetConnectMs();

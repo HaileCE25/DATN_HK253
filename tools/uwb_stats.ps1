@@ -41,6 +41,10 @@ $rows = foreach ($l in (Get-Content $Log)) {
     if ($l -match '(\d+) ms distance=([\d.]+) m \(raw=([\d.]+)\)') {
         [pscustomobject]@{ t = [int]$matches[1] / 1000.0; d = [double]$matches[2]; r = [double]$matches[3] }
     }
+    elseif ($l -match '^\s*(\d+),\d+,([\d.]+),([\d.]+),([\d.]+),([\d.]+),(\d)\s*$') {
+        # CSV luồng thô có seq: ms,seq,raw_cm,med_cm,filt_cm,alpha,flag
+        [pscustomobject]@{ t = [int]$matches[1] / 1000.0; r = [double]$matches[2] / 100.0; d = [double]$matches[4] / 100.0 }
+    }
     elseif ($l -match '^\s*(\d+),([\d.]+),([\d.]+),([\d.]+),([\d.]+),(\d)\s*$') {
         # CSV luồng thô mới: ms,raw_cm,med_cm,filt_cm,alpha,flag
         [pscustomobject]@{ t = [int]$matches[1] / 1000.0; r = [double]$matches[2] / 100.0; d = [double]$matches[4] / 100.0 }

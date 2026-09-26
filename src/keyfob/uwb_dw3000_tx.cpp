@@ -85,7 +85,7 @@ static bool txCoreInit()
 
     if (!waitForIdleOrHardReset(UWB_INIT_MAX_HARDRESET_RETRY))
     {
-        TX_LOG_PRINTLN("[UWB TX] txCoreInit: IDLE1 failed");
+        LOG_PRINTLN("[UWB TX] txCoreInit: IDLE1 failed (DW3000 khong vao IDLE sau hard-reset)");
         return false;
     }
 
@@ -94,7 +94,18 @@ static bool txCoreInit()
 
     if (!waitForIdleOrHardReset(UWB_INIT_MAX_HARDRESET_RETRY))
     {
-        TX_LOG_PRINTLN("[UWB TX] txCoreInit: IDLE2 failed");
+        LOG_PRINTLN("[UWB TX] txCoreInit: IDLE2 failed (DW3000 khong vao IDLE sau soft-reset)");
+        return false;
+    }
+
+    // Kiểm tra device ID SAU các vòng chờ IDLE (đã có hard-reset retry), để chip
+    // khởi động chậm không bị báo lỗi oan. Chip không trả lời SPI (dây/nguồn/CS)
+    // thì đọc ra 0xFFFFFFFF (MISO thả nổi, checkForIDLE() vẫn "đúng") hoặc 0.
+    uint32_t devId = DW3000.read(0x00, 0x00);
+    if (devId != 0xDECA0302 && devId != 0xDECA0312)
+    {
+        LOG_PRINTF("[UWB TX] Sai device ID 0x%08lX - DW3000 khong phan hoi SPI (kiem tra day/nguon)\n",
+                   (unsigned long)devId);
         return false;
     }
 

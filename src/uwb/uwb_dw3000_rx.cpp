@@ -171,6 +171,17 @@ static bool rangingCoreInit()
         if (UWB_DEBUG) Serial.println("[ERROR] rangingCoreInit: IDLE2 failed after max hard-reset retries");
         return false;
     }
+
+    // Kiểm tra device ID SAU các vòng chờ IDLE (đã có hard-reset retry), để chip
+    // khởi động chậm không bị báo lỗi oan. Chip không trả lời SPI (dây/nguồn/CS)
+    // thì đọc ra 0xFFFFFFFF (MISO thả nổi, checkForIDLE() vẫn "đúng") hoặc 0.
+    uint32_t devId = DW3000.read(0x00, 0x00);
+    if (devId != 0xDECA0302 && devId != 0xDECA0312)
+    {
+        LOG_PRINTF("[UWB DW3000] Sai device ID 0x%08lX - DW3000 khong phan hoi SPI (kiem tra day/nguon)\n",
+                   (unsigned long)devId);
+        return false;
+    }
     if (UWB_DEBUG) Serial.println("debug3 - IDLE2 OK");
 
     DW3000.init(); // Initialize chip (write default values, calibration, etc.)
@@ -523,8 +534,7 @@ static float pushSampleAndGetMedianCm(float cm)
 //  3) Làm mượt EMA với hệ số alpha THAY ĐỔI theo độ lệch: median chỉ xê dịch
 //     nhỏ (trong DEADBAND) -> alpha nhỏ, nuốt nhiễu; lệch nhiều -> alpha lớn,
 //     bám nhanh khi di chuyển thật.
-// Khoảng cách giữa 2 mẫu > UWB_FILTER_MAX_DT_MS (low-power đo thưa, hoặc mất
-// sync lâu): mẫu cũ không còn đại diện -> khởi tạo lại bộ lọc từ mẫu mới.
+// Khoảng cách giữa 2 mẫu > UWB_FILTER_MAX_DT_MS (mất sync lâu): mẫu cũ không còn đại diện -> khởi tạo lại bộ lọc từ mẫu mới.
 #ifndef UWB_GATE_V_MAX_MPS
 #define UWB_GATE_V_MAX_MPS 3.0f      // tốc độ tối đa hợp lý giữa 2 mẫu (m/s)
 #endif
@@ -673,6 +683,8 @@ static bool s_initialized = false;
 static bool s_ranging = false;
 static float s_lastDistance = 0.0f; // ĐƠN VỊ: MÉT
 static bool s_hasDistance = false;
+static uint32_t s_sampleSeq = 0; // số thứ tự mẫu trong PHIÊN ranging (về 0 ở UWB_StartRanging), tăng 1 mỗi mẫu đã lọc
+static portMUX_TYPE s_sampleMux = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_rangingTaskHandle = nullptr;
 
 // K_session lưu trữ, nạp vào DW3000 trước khi ranging
@@ -684,8 +696,7 @@ static bool s_sessionKeySet = false;
 // tiết kiệm pin, log từng round lẻ (ít dữ liệu, xem riêng từng mẫu được).
 // Vùng tiếp cận (<= UWB_APPROACH_ZONE_M): full-rate, log theo NHÓM
 // UWB_MEASURE_SAMPLES round/lần (đỡ spam Serial, vẫn đủ để theo dõi xu hướng).
-// Sau unlock (s_lowPowerMode=true): đo thưa bất kể khoảng cách - chỉ cần biết
-// lúc nào vượt R_LOCK để relock, không cần độ chính xác/tốc độ cao nữa.
+// Sau unlock vẫn đo như bình thường (không còn chế độ low-power).
 #ifndef UWB_APPROACH_ZONE_M
 #define UWB_APPROACH_ZONE_M 2.0f
 #endif
@@ -694,17 +705,13 @@ static bool s_sessionKeySet = false;
 #define UWB_FAR_ZONE_INTERVAL_MS 1500
 #endif
 
-#ifndef UWB_POST_UNLOCK_INTERVAL_MS
-#define UWB_POST_UNLOCK_INTERVAL_MS 2500
-#endif
-
 #ifndef UWB_FAIL_LOG_INTERVAL_MS
 #define UWB_FAIL_LOG_INTERVAL_MS 5000
 #endif
 
 // 1 = log mọi round ngay khi đo xong và KHÔNG duty-cycle vùng xa (đo full-rate mọi
 // khoảng cách trước unlock) để thấy khoảng cách thời gian thực. 0 = bật lại log
-// theo nhóm + duty-cycle vùng xa để tiết kiệm năng lượng. Sau unlock luôn low-power.
+// theo nhóm + duty-cycle vùng xa để tiết kiệm năng lượng.
 #ifndef UWB_REALTIME_LOG
 #define UWB_REALTIME_LOG 1
 #endif
@@ -729,8 +736,8 @@ static bool s_sessionKeySet = false;
 #define UWB_LOG_HEARTBEAT_MS 1000
 #endif
 
-// 1 = in luồng dữ liệu thô riêng cho MỌI round (dòng "[UWBRAW],ms,raw_cm,filt_cm" hoặc
-// "[UWBRAW],ms,FAIL,state"), không phụ thuộc UWB_LOG_ON_CHANGE. Bật ở env:car; bộ lọc
+// 1 = in luồng dữ liệu thô riêng cho MỌI round (dòng "[UWBRAW],ms,seq,raw_cm,med_cm,filt_cm,alpha,flag"
+// hoặc "[UWBRAW],ms,seq,FAIL,state"; seq = số mẫu thành công trong phiên), không phụ thuộc UWB_LOG_ON_CHANGE. Bật ở env:car; bộ lọc
 // monitor/filter_uwb_raw.py tách khỏi màn hình và ghi ra logs/uwb_raw-*.csv.
 #ifndef UWB_RAW_STREAM
 #define UWB_RAW_STREAM 0
@@ -738,8 +745,6 @@ static bool s_sessionKeySet = false;
 
 static float    s_lastLoggedCm    = 0.0f;
 static uint32_t s_lastLogMs       = 0;
-static bool     s_lowPowerMode    = false;
-static float    s_lowPowerNearCm  = 100.0f; // đo thưa CHỈ khi distance < ngưỡng này (cm)
 static uint8_t  s_logGroupCounter = 0;
 static uint16_t s_failCount       = 0;
 static uint8_t  s_lastFailState   = 0;
@@ -747,99 +752,30 @@ static uint32_t s_lastFailRx      = 0;
 static uint32_t s_lastFailTx      = 0;
 static uint32_t s_lastFailLogMs   = 0;
 
-void UWB_SetLowPowerMode(bool enabled, float nearThresholdM)
-{
-    s_lowPowerMode   = enabled;
-    s_lowPowerNearCm = nearThresholdM * 100.0f;
-    UWB_LOG_PRINTF("[UWB DW3000] Low-power (post-unlock, < %.2f m) mode %s\n",
-                   nearThresholdM, enabled ? "ON" : "OFF");
-}
-
-// Gọi lại mỗi vòng lặp (trước khi đo VÀ sau khi đo) - dùng s_lastDistance hiện có
-// (của round trước, hoặc vừa cập nhật) để quyết định "có đang trong vùng gần cần
-// đo thưa không". Nhờ gọi lại sau mỗi round, ngay khi khoảng cách vượt ngưỡng là
-// vòng lặp SAU đó chuyển về full-rate ngay, không cần đợi lệnh nào khác.
-static bool ShouldUseLowPowerNow()
-{
-    return s_lowPowerMode && s_hasDistance && (s_lastDistance * 100.0f < s_lowPowerNearCm);
-}
-
-// ---- Low-power (post-unlock): N round nhanh liên tiếp -> lấy MEDIAN --------------
-// Một mẫu đơn lẻ mỗi UWB_POST_UNLOCK_INTERVAL_MS rất dễ bị 1 round nhiễu/đa đường
-// làm sai lệch hẳn (đã thấy trong log thật: 0.45 m rồi 2.43 m chỉ sau đúng 1 chu kỳ
-// 2.5s) vì ở tần suất thấp KHÔNG có sliding-window median nào bảo vệ - hai mẫu cách
-// nhau hơn UWB_FILTER_MAX_DT_MS nên filterDistanceCm() luôn reset, filt = raw y hệt.
-// Cách sửa: mỗi lần "thức dậy", đo nhanh UWB_POST_UNLOCK_BURST_SAMPLES round liên
-// tiếp (~68 ms/round, cộng dồn không đáng kể so với chu kỳ ngủ 2.5s -> KHÔNG đổi
-// ngân sách pin/tần suất, đúng như đã thống nhất tạm gác việc đổi rate), lấy MEDIAN
-// các round thành công rồi mới đưa 1 giá trị vào filterDistanceCm() - loại được
-// trường hợp đúng 1 round lỗi quyết định cả giá trị của chu kỳ 2.5s đó.
-#ifndef UWB_POST_UNLOCK_BURST_SAMPLES
-#define UWB_POST_UNLOCK_BURST_SAMPLES 3
-#endif
-
-static float measureLowPowerBurstCm()
-{
-    float buf[UWB_POST_UNLOCK_BURST_SAMPLES];
-    uint8_t cnt = 0;
-
-    for (uint8_t i = 0; i < UWB_POST_UNLOCK_BURST_SAMPLES; i++)
-    {
-        float cm = measure_once_cm();
-        if (cm >= 0.0f)
-        {
-            buf[cnt++] = cm;
-        }
-        else
-        {
-            // Hạch toán round lỗi giống hệt nhánh lỗi ở RangingTask (measure_once_cm()
-            // đã ghi s_failState/s_failRxStatus/s_failTxStatus trước khi return -1).
-            s_failCount++;
-#if UWB_RAW_STREAM
-            UWB_LOG_PRINTF("[UWBRAW],%lu,FAIL,%s\n", (unsigned long)millis(), stateName(s_failState));
-#endif
-            s_lastFailState = s_failState;
-            s_lastFailRx    = s_failRxStatus;
-            s_lastFailTx    = s_failTxStatus;
-        }
-    }
-
-    if (cnt == 0)
-        return -1.0f; // cả burst đều lỗi - đã hạch toán ở trên, để nguyên như 1 round lỗi
-
-    // Sắp xếp (tối đa vài phần tử) rồi lấy trung vị.
-    for (uint8_t i = 1; i < cnt; i++)
-    {
-        float v = buf[i];
-        int8_t j = (int8_t)i - 1;
-        while (j >= 0 && buf[j] > v) { buf[j + 1] = buf[j]; j--; }
-        buf[j + 1] = v;
-    }
-    return buf[cnt / 2];
-}
-
 static void RangingTask(void* pvParameters)
 {
     for (;;)
     {
         if (s_ranging)
         {
-            bool useSlowRate = ShouldUseLowPowerNow();
-            float cm = useSlowRate ? measureLowPowerBurstCm() : measure_once_cm();
+            float cm = measure_once_cm();
             if (cm >= 0.0f)
             {
                 uint32_t sampleMs = millis();
                 float filtCm    = filterDistanceCm(cm, sampleMs);
+                portENTER_CRITICAL(&s_sampleMux);
                 s_lastDistance  = filtCm / 100.0f;
                 s_hasDistance   = true;
+                s_sampleSeq++;
+                portEXIT_CRITICAL(&s_sampleMux);
 
 #if UWB_RAW_STREAM
                 // Luồng dữ liệu thô RIÊNG: mỗi round thành công 1 dòng CSV có thẻ [UWBRAW]
-                // (ms, raw_cm, med_cm, filt_cm, alpha, flag), độc lập với log đọc được ở dưới.
+                // (ms, seq, raw_cm, med_cm, filt_cm, alpha, flag), độc lập với log đọc được ở dưới.
                 // Cho thấy từng bước làm sạch: raw -> (chặn nhảy vọt) -> median -> EMA -> filt.
                 // Bộ lọc monitor monitor/filter_uwb_raw.py tách các dòng này ra logs/uwb_raw-*.csv.
-                UWB_LOG_PRINTF("[UWBRAW],%lu,%.1f,%.1f,%.1f,%.2f,%u\n",
-                               (unsigned long)sampleMs, cm, s_dbgMedianCm, filtCm,
+                UWB_LOG_PRINTF("[UWBRAW],%lu,%lu,%.1f,%.1f,%.1f,%.2f,%u\n",
+                               (unsigned long)sampleMs, (unsigned long)s_sampleSeq, cm, s_dbgMedianCm, filtCm,
                                s_dbgAlpha, (unsigned)s_dbgFlag);
 #endif
 
@@ -880,15 +816,13 @@ static void RangingTask(void* pvParameters)
                 }
 #endif
             }
-            else if (!useSlowRate)
+            else
             {
                 // Không in từng lần (round lỗi khá thường xuyên -> tràn log), chỉ gom đếm.
-                // (Ở low-power, measureLowPowerBurstCm() đã tự hạch toán từng round lỗi
-                // trong burst rồi - không lặp lại ở đây kẻo đếm trùng.)
                 s_failCount++;
 #if UWB_RAW_STREAM
-                UWB_LOG_PRINTF("[UWBRAW],%lu,FAIL,%s\n",
-                               (unsigned long)millis(), stateName(s_failState));
+                UWB_LOG_PRINTF("[UWBRAW],%lu,%lu,FAIL,%s\n",
+                               (unsigned long)millis(), (unsigned long)s_sampleSeq, stateName(s_failState));
 #endif
                 s_lastFailState = s_failState;
                 s_lastFailRx    = s_failRxStatus;
@@ -906,13 +840,9 @@ static void RangingTask(void* pvParameters)
             }
         }
 
-        // Gọi lại SAU khi đo (s_lastDistance có thể vừa đổi) để chọn thời gian ngủ cho
-        // vòng kế tiếp - rời khỏi vùng gần là ngủ ngắn lại (full-rate) ngay từ lần sau.
         uint32_t delayMs = UWB_FULL_RATE_DELAY_MS;
-        if (ShouldUseLowPowerNow())
-            delayMs = UWB_POST_UNLOCK_INTERVAL_MS;
 #if !UWB_REALTIME_LOG
-        else if (s_hasDistance && s_lastDistance > UWB_APPROACH_ZONE_M)
+        if (s_hasDistance && s_lastDistance > UWB_APPROACH_ZONE_M)
             delayMs = UWB_FAR_ZONE_INTERVAL_MS;
 #endif
 
@@ -990,13 +920,15 @@ bool UWB_StartRanging()
     if (s_ranging)
         return true; // idempotent
 
-    s_ranging = true;
+    portENTER_CRITICAL(&s_sampleMux);
     s_hasDistance = false;
+    s_sampleSeq   = 0; // mẫu đầu của phiên là #1 (log/thống kê theo phiên)
+    portEXIT_CRITICAL(&s_sampleMux);
     resetDistanceFilter();
+    s_ranging = true;
     s_lastLoggedCm = 0.0f;
     s_lastLogMs    = 0; // dòng đầu của phiên luôn được in
     s_logGroupCounter = 0;
-    s_lowPowerMode = false; // luôn bắt đầu phiên mới ở full-rate
 
     if (s_rangingTaskHandle == nullptr)
     {
@@ -1028,4 +960,17 @@ bool UWB_GetLastDistance(float& outMeters)
 
     outMeters = s_lastDistance;
     return true;
+}
+
+bool UWB_GetLastSample(float& outMeters, uint32_t& outSeq)
+{
+    portENTER_CRITICAL(&s_sampleMux);
+    bool has = s_hasDistance;
+    if (has)
+    {
+        outMeters = s_lastDistance;
+        outSeq    = s_sampleSeq;
+    }
+    portEXIT_CRITICAL(&s_sampleMux);
+    return has;
 }

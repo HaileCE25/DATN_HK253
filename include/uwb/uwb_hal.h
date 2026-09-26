@@ -40,18 +40,8 @@ bool UWB_StopRanging();
 // hoặc mới start chưa đủ thời gian có kết quả đầu tiên).
 bool UWB_GetLastDistance(float& outMeters);
 
-// Bật/tắt chế độ tiết kiệm năng lượng (duty-cycle thưa) sau khi đã unlock.
-// Vẫn tiếp tục ranging (cần để phát hiện lúc rời xa quá R_LOCK -> relock).
-//
-// CHỈ đo thưa (mỗi round cách nhau nhiều giây) khi khoảng cách gần nhất đo
-// được còn < nearThresholdM (mặc định 1.0 m - đúng vùng unlock, lúc này
-// người dùng gần như chắc chắn đứng ngay cạnh xe, không cần theo dõi sát).
-// Ngay khi một mẫu cho thấy khoảng cách >= nearThresholdM (đang rời xa,
-// đúng lúc cần quyết định relock chính xác) - TỰ ĐỘNG quay lại đo full-rate
-// với bộ lọc median+EMA như lúc tracking bình thường, không đợi lệnh nào
-// khác. (Trước đây đo thưa suốt cả giai đoạn sau unlock, kể cả khi đã rời
-// xa 1-2m để chờ relock - mỗi mẫu cách nhau ~2.5s không được lọc gì, dễ
-// nhảy vọt sai và làm relock chậm/nhảy cảm.)
-// Chỉ implement bên phía car (RX/responder) - phía keyfob (TX) không cần
-// và không gọi hàm này.
-void UWB_SetLowPowerMode(bool enabled, float nearThresholdM = 1.0f);
+// Như UWB_GetLastDistance() nhưng kèm số thứ tự mẫu (tăng 1 sau mỗi mẫu đã lọc
+// mới được công bố), để phía gọi đếm "N mẫu liên tiếp" mà không đếm trùng một
+// mẫu bị đọc lại nhiều lần. Đọc khoảng cách và seq nhất quán với nhau.
+// Chỉ implement bên phía car (RX/responder) - phía keyfob (TX) không gọi hàm này.
+bool UWB_GetLastSample(float& outMeters, uint32_t& outSeq);

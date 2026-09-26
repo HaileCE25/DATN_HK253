@@ -6,10 +6,12 @@
 // Cloud Subsystem Configuration (Gateway only)
 // -----------------------------------------------------------------------------
 
-// WiFi không còn hard-code: lưu trong NVS (wifi_store) và cấu hình qua
-// captive portal (wifi_portal). Xem wifi_manager.h.
+// TẠM THỜI gán cứng mạng WiFi (WiFi_Connect) để test nhanh. Captive portal
+// (WiFi_Start, wifi_portal, wifi_store) vẫn giữ nguyên code nhưng chưa dùng.
+#define WIFI_SSID       "Mai Thao 2.4GHz"
+#define WIFI_PASSWORD   "1141211412"
 
-// Access point cấu hình, LUÔN phát.
+// Access point cấu hình (chỉ dùng khi chạy captive portal qua WiFi_Start).
 // Đổi mật khẩu này (>= 8 ký tự) và dán nhãn lên thiết bị: ai vào được AP này
 // thì đổi được WiFi của Gateway.
 #define WIFI_AP_SSID         "GATEWAY"

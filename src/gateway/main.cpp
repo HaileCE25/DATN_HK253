@@ -376,11 +376,22 @@ void setup()
 
     s_canReady = TWAI_Init();
 
-    // Không blocking: bật AP + trang cấu hình, nối lại mạng dùng gần nhất trong
-    // task WiFi. Firebase được khởi tạo trong loop() khi đã có WiFi.
-    WiFi_Start();
+    // TẠM THỜI: nối mạng gán cứng (WIFI_SSID) như ban đầu, chưa dùng captive
+    // portal (WiFi_Start). WiFi/Firebase lỗi thì loop() thử lại.
+    if (!WiFi_Connect())
+        LOG_PRINTLN("[GATEWAY ERROR] WiFi connect failed");
+    else if (!Firebase_Init())
+        LOG_PRINTLN("[GATEWAY ERROR] Firebase init failed");
 
-    LOG_PRINTLN("[GATEWAY] Chờ kết nối tới Firebase và yêu cầu cấp khóa từ Car qua CAN");
+    if (Firebase_IsReady())
+    {
+        // Bỏ các frame dồn trong lúc chờ WiFi/Firebase - Car sẽ tự hỏi lại.
+        if (s_canReady)
+            twai_clear_receive_queue();
+        LOG_PRINTLN("[GATEWAY] Sẵn sàng, chờ yêu cầu khóa từ Car qua CAN");
+    }
+    else
+        LOG_PRINTLN("[GATEWAY] Chưa kết nối được Firebase - chưa xử lý CAN, sẽ thử lại");
 }
 
 // Vòng dispatch CAN DUY NHẤT: đọc 1 frame rồi route theo identifier.
@@ -388,35 +399,28 @@ void setup()
 // ID trong lúc chờ, nên handler này sẽ "ăn mất" frame của handler kia.
 void loop()
 {
-    // Firebase cần WiFi ra được Internet. WiFi do task WiFi lo (người dùng chọn
-    // trên trang cấu hình), ở đây chỉ chờ mạng ổn định rồi khởi tạo 1 lần.
-    // Mỗi lần thử có thể chặn loop() vài giây (TLS timeout) nên lùi dần thời
-    // gian thử lại; đổi sang mạng khác thì thử lại ngay.
-    static uint32_t  s_fbNextTryMs = 0;
-    static uint32_t  s_fbBackoffMs = FIREBASE_RETRY_MIN_MS;
-    static IPAddress s_fbLastIp;
-    if (!Firebase_IsReady() && WiFi_IsConnected() && !WiFi_IsConnecting())
+    // Chưa có Firebase thì không xử lý CAN (không tra được key). Mỗi lần thử có
+    // thể chặn loop() vài giây (TLS timeout) nên lùi dần thời gian thử lại.
+    // WiFi rớt thì driver tự nối lại (auto-reconnect), ở đây chỉ chờ.
+    static uint32_t s_fbNextTryMs = 0;
+    static uint32_t s_fbBackoffMs = FIREBASE_RETRY_MIN_MS;
+    if (!Firebase_IsReady())
     {
-        IPAddress ip = WiFi.localIP();
-        if (ip != s_fbLastIp)
-        {
-            s_fbLastIp    = ip;
-            s_fbBackoffMs = FIREBASE_RETRY_MIN_MS;
-            s_fbNextTryMs = 0;
-        }
-
-        if (s_fbNextTryMs == 0 || (int32_t)(millis() - s_fbNextTryMs) >= 0)
+        if (WiFi_IsConnected() && (int32_t)(millis() - s_fbNextTryMs) >= 0)
         {
             if (Firebase_Init())
             {
+                // Bỏ các KeyRequest cũ dồn trong lúc chờ - Car sẽ tự hỏi lại.
+                if (s_canReady)
+                    twai_clear_receive_queue();
                 LOG_PRINTLN("[GATEWAY] Sẵn sàng, chờ yêu cầu khóa từ Car qua CAN");
+                return;
             }
-            else
-            {
-                s_fbNextTryMs = (millis() + s_fbBackoffMs) | 1;
-                s_fbBackoffMs = min(s_fbBackoffMs * 2, FIREBASE_RETRY_MAX_MS);
-            }
+            s_fbNextTryMs = millis() + s_fbBackoffMs;
+            s_fbBackoffMs = min(s_fbBackoffMs * 2, FIREBASE_RETRY_MAX_MS);
         }
+        delay(100);
+        return;
     }
 
     if (!s_canReady)

@@ -29,12 +29,16 @@ typedef enum
 /*=====================================================
             NGƯỠNG UWB & FAIL-SAFE
 =====================================================*/
-constexpr float     UWB_R_UNLOCK      = 1.0f;    // m — vào gần hơn mức này → mở
-constexpr float     UWB_R_LOCK        = 1.5f;    // m — ra xa hơn mức này → relock
-constexpr uint32_t  UWB_T_STABLE_MS   = 3000;    // ms — phải ở trong R_UNLOCK liên tục
-constexpr uint8_t   UWB_M_RELOCK      = 5;       // mẫu liên tiếp > R_LOCK → relock
-constexpr uint8_t   UWB_M_UNLOCK_ABORT = 2;      // mẫu liên tiếp ra khỏi R_UNLOCK → mới reset dwell timer
-                                                   // (chống dao động nhiễu quanh biên R_UNLOCK làm mất trắng bộ đếm)
+constexpr float     UWB_R_UNLOCK      = 1.5f;    // m — mẫu < mức này là "trong vùng unlock"
+constexpr uint8_t   UWB_N_UNLOCK      = 12;      // trong UWB_W_UNLOCK mẫu MỚI gần nhất có >= N mẫu < R_UNLOCK → mở khoá
+constexpr uint8_t   UWB_W_UNLOCK      = 15;      // cửa sổ trượt (mẫu) cho điều kiện unlock N/W
+                                                   // (cho phép W-N mẫu nhiễu vọt ra ngoài mà không phải đếm lại)
+static_assert(UWB_W_UNLOCK <= 16 && UWB_N_UNLOCK <= UWB_W_UNLOCK, "cua so unlock luu trong uint16_t");
+constexpr float     UWB_R_LOCK        = 3.5f;    // m — sau unlock, mẫu >= mức này mới bắt đầu tính relock
+constexpr uint8_t   UWB_N_RELOCK      = 10;      // mẫu MỚI liên tiếp >= R_LOCK và không giảm → relock
+constexpr float     UWB_RELOCK_TREND_TOL_M = 0.05f; // m — mẫu coi là "không giảm" nếu >= mẫu trước - dung sai này
+                                                   // (dung sai hấp thụ nhiễu nhỏ / mẫu lặp khi đứng im)
+constexpr uint32_t  UNLOCK_POLL_MS    = 20;      // ms — chu kỳ đọc UWB; phải < chu kỳ round (~68 ms) để không lỡ mẫu nào
 constexpr uint32_t  BLE_FAILSAFE_MS   = 5000;    // ms — mất BLE lâu hơn → relock
 constexpr uint32_t  FSM_COOLDOWN_MS   = 5000;    // ms — cooldown sau relock
 
@@ -112,6 +116,21 @@ static bool     g_kSessionReady = false;
 // FSM và BLE fail-safe
 static volatile CarFsmState_t g_fsmState  = FSM_IDLE;
 static volatile uint32_t      g_lastBleMs = 0;  // millis() lần cuối có contact BLE
+static volatile bool          g_firstSamplePending = false; // đang chờ mẫu khoảng cách đầu tiên của phiên (để log thời gian)
+static volatile uint32_t      g_rangingStartMs = 0; // millis() lúc (re)start ranging - mốc thời gian của 1 lần thử
+static volatile uint32_t      g_unlockMs       = 0; // millis() lúc mở khoá gần nhất
+
+// Luồng sự kiện FSM cho thống kê: "[UWBEVT],ms,seq,event,dist_m,count,dt_ms".
+// seq khớp cột seq của [UWBRAW] (số mẫu trong phiên ranging); monitor/filter_uwb_raw.py
+// ghi ra logs/uwb_evt-*.csv, tools/uwb_trials.py ghép với uwb_raw-*.csv thành bảng.
+// Sự kiện: START (dt = BLE connect -> ranging), RESUME (sau cooldown), FIRST (dt = start -> mẫu
+// đầu), ENTER / EXIT (vào/ra vùng unlock, count = số mẫu đã đếm), UNLOCK (dt = start -> mở),
+// RELOCK / FAILSAFE (dt = mở -> khoá lại).
+static void LogUwbEvt(const char *evt, uint32_t seq, float distM, unsigned count, uint32_t dtMs)
+{
+    LOG_PRINTF("[UWBEVT],%lu,%lu,%s,%.2f,%u,%lu\n", (unsigned long)millis(), (unsigned long)seq,
+               evt, distM, count, (unsigned long)dtMs);
+}
 
 // Thời điểm auth bị từ chối gần nhất - chỉ để báo trạng thái lên gateway/LCD
 // (sau khi fail car disconnect ngay, nếu không giữ lại thì LCD không kịp thấy).
@@ -597,9 +616,20 @@ void TaskNFC(void *pvParameters)
 // nên khi Car bật lại RX, Keyfob đã "sẵn sàng" ở đó chờ ngay từ trước.)
 static void ResumeTrackingOrIdleAfterCooldown()
 {
-    if (BLE_Car_GetState() == CAR_AUTHENTICATED && UWB_StartRanging())
+    if (BLE_Car_GetState() != CAR_AUTHENTICATED)
+    {
+        g_fsmState = FSM_IDLE;
+        return;
+    }
+
+    // Log mốc TRƯỚC khi start: RangingTask (priority cao hơn) có thể in mẫu đầu tiên
+    // ngay trong UWB_StartRanging(); tools/uwb_trials.py chia lần thử theo mốc này.
+    g_rangingStartMs = millis();
+    LogUwbEvt("RESUME", 0, 0.0f, 0, 0);
+    if (UWB_StartRanging())
     {
         LOG_PRINTLN("[CAR FSM ] Het cooldown, BLE con phien - resume ranging");
+        g_firstSamplePending = true;
         g_fsmState = FSM_TRACKING;
     }
     else
@@ -610,12 +640,12 @@ static void ResumeTrackingOrIdleAfterCooldown()
 
 void TaskUnlock(void *pvParameters)
 {
-    uint32_t inRangeStartMs   = 0;
-    bool     inRangeStarted   = false;
-    uint8_t  unlockAbortCount = 0; // mẫu liên tiếp ra khỏi R_UNLOCK (debounce dwell timer)
-    uint8_t  outRangeCount    = 0;
-    float    lastRelockDist      = 0.0f;
-    bool     lastRelockDistValid = false; // để chỉ đếm outRangeCount trên mẫu MỚI, không đếm trùng mẫu cũ khi UWB duty-cycle (đo thưa sau unlock)
+    uint16_t inHist        = 0;    // bit i = mẫu mới thứ i tính từ gần nhất có < R_UNLOCK (cửa sổ UWB_W_UNLOCK)
+    uint8_t  inRangeCount  = 0;    // số mẫu < R_UNLOCK trong cửa sổ (popcount của inHist)
+    uint8_t  outRangeCount = 0;    // số mẫu mới liên tiếp >= R_UNLOCK và không giảm (khi đã unlock)
+    float    prevOutDist   = 0.0f; // mẫu trước trong chuỗi đếm relock
+    uint32_t lastSeq       = 0;
+    bool     seqValid      = false; // false -> mẫu đầu tiên sau (re)start ranging luôn được tính là mới
 
     for (;;)
     {
@@ -630,130 +660,124 @@ void TaskUnlock(void *pvParameters)
             if ((now - g_lastBleMs) > BLE_FAILSAFE_MS)
             {
                 LOG_PRINTLN("[CAR FSM ] BLE mat lien lac > fail-safe - relock");
+                LogUwbEvt("FAILSAFE", seqValid ? lastSeq : 0, 0.0f, 0,
+                          state == FSM_UNLOCKED ? now - g_unlockMs : 0);
                 SendActuatorCmd(ACTUATOR_CMD_LOCK);
                 UWB_StopRanging();
-                g_fsmState          = FSM_COOLDOWN;
-                inRangeStarted      = false;
-                unlockAbortCount    = 0;
-                outRangeCount       = 0;
-                lastRelockDistValid = false;
+                g_fsmState    = FSM_COOLDOWN;
+                inHist        = 0;
+                inRangeCount  = 0;
+                outRangeCount = 0;
+                seqValid      = false;
                 vTaskDelay(pdMS_TO_TICKS(FSM_COOLDOWN_MS));
                 ResumeTrackingOrIdleAfterCooldown();
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
             }
 
-            // ── Đọc khoảng cách UWB ──────────────────────────────────────
-            float dist;
-            if (!UWB_GetLastDistance(dist))
+            // ── Đọc mẫu UWB mới ────────────────────────────────────────────
+            float    dist;
+            uint32_t seq;
+            if (!UWB_GetLastSample(dist, seq) || (seqValid && seq == lastSeq))
             {
-                // UWB chưa có mẫu - đợi thêm
-                vTaskDelay(pdMS_TO_TICKS(100));
+                // Chưa có mẫu, hoặc chưa có mẫu MỚI - đợi thêm (không đếm trùng)
+                vTaskDelay(pdMS_TO_TICKS(UNLOCK_POLL_MS));
                 continue;
             }
+            lastSeq  = seq;
+            seqValid = true;
 
-            // ── FSM_TRACKING / FSM_UNLOCK_WINDOW ─────────────────────────
+            if (g_firstSamplePending)
+            {
+                g_firstSamplePending = false;
+                LogUwbEvt("FIRST", seq, dist, 0, now - g_rangingStartMs);
+            }
+
+            // ── FSM_TRACKING / FSM_UNLOCK_WINDOW: >= N/W mẫu gần nhất < R_UNLOCK → mở ──
+            // Cửa sổ trượt W mẫu thay vì N mẫu liên tiếp: vài mẫu nhiễu vọt ra ngoài
+            // R_UNLOCK (tối đa W-N) không làm mất trắng số mẫu đã tích luỹ.
             if (state == FSM_TRACKING || state == FSM_UNLOCK_WINDOW)
             {
-                if (dist <= UWB_R_UNLOCK)
-                {
-                    unlockAbortCount = 0; // về lại trong vùng -> huỷ đếm "đang rời đi"
+                const uint16_t winMask = (uint16_t)((1u << UWB_W_UNLOCK) - 1u);
+                const uint8_t  prevCount = inRangeCount;
+                inHist       = (uint16_t)(((inHist << 1) | (dist < UWB_R_UNLOCK ? 1u : 0u)) & winMask);
+                inRangeCount = (uint8_t)__builtin_popcount(inHist);
 
-                    // Đang trong ngưỡng unlock
-                    if (!inRangeStarted)
-                    {
-                        inRangeStarted = true;
-                        inRangeStartMs = now;
-                        g_fsmState = FSM_UNLOCK_WINDOW;
-                        LOG_PRINTF("[CAR FSM ] Vao vung unlock (%.2f m), bat dau tinh gio...\n", dist);
-                    }
-                    // hasRealKey: key có thể vừa bị thu hồi giữa vòng lặp này (TaskLogic
-                    // đang huỷ phiên) - không được mở khoá nữa.
-                    else if ((now - inRangeStartMs) >= UWB_T_STABLE_MS && hasRealKey)
-                    {
-                        // Đủ thời gian → mở khóa
-                        LOG_PRINTF("[CAR FSM ] Mo khoa! Giu %.2f m trong %lu ms\n",
-                                   dist, (unsigned long)UWB_T_STABLE_MS);
-                        SendActuatorCmd(ACTUATOR_CMD_UNLOCK);
-                        g_fsmState    = FSM_UNLOCKED;
-                        outRangeCount = 0;
-                        inRangeStarted = false;
-                        // Đo thưa CHỈ khi còn < UWB_R_UNLOCK (đứng sát xe); rời xa hơn để
-                        // relock thì UWB tự quay lại full-rate + lọc bình thường (xem
-                        // uwb_dw3000_rx.cpp::ShouldUseLowPowerNow()).
-                        UWB_SetLowPowerMode(true, UWB_R_UNLOCK);
-                    }
-                }
-                else
+                if (prevCount == 0 && inRangeCount > 0)
                 {
-                    // Ra ngoài ngưỡng — chỉ reset sau UWB_M_UNLOCK_ABORT mẫu liên tiếp,
-                    // tránh 1 mẫu nhiễu dao động quanh biên R_UNLOCK xoá sạch dwell timer đã tích luỹ.
-                    if (inRangeStarted)
-                    {
-                        unlockAbortCount++;
-                        if (unlockAbortCount >= UWB_M_UNLOCK_ABORT)
-                        {
-                            LOG_PRINTF("[CAR FSM ] Ra khoi vung unlock (%.2f m) du %u mau lien tiep - reset timer\n",
-                                       dist, (unsigned)unlockAbortCount);
-                            inRangeStarted   = false;
-                            unlockAbortCount = 0;
-                            g_fsmState = FSM_TRACKING;
-                        }
-                    }
+                    g_fsmState = FSM_UNLOCK_WINDOW;
+                    LOG_PRINTF("[CAR FSM ] Vao vung unlock (%.2f m), dem %u/%u trong %u mau...\n",
+                               dist, (unsigned)inRangeCount, (unsigned)UWB_N_UNLOCK, (unsigned)UWB_W_UNLOCK);
+                    LogUwbEvt("ENTER", seq, dist, inRangeCount, now - g_rangingStartMs);
+                }
+                else if (prevCount > 0 && inRangeCount == 0)
+                {
+                    LOG_PRINTF("[CAR FSM ] Ra khoi vung unlock (%.2f m) - cua so %u mau khong con mau nao < %.2f m\n",
+                               dist, (unsigned)UWB_W_UNLOCK, UWB_R_UNLOCK);
+                    LogUwbEvt("EXIT", seq, dist, prevCount, now - g_rangingStartMs);
+                    g_fsmState = FSM_TRACKING;
+                }
+
+                // hasRealKey: key có thể vừa bị thu hồi giữa vòng lặp này (TaskLogic
+                // đang huỷ phiên) - không được mở khoá nữa.
+                if (inRangeCount >= UWB_N_UNLOCK && hasRealKey)
+                {
+                    LOG_PRINTF("[CAR FSM ] Mo khoa! %u/%u mau gan nhat < %.2f m (mau cuoi %.2f m)\n",
+                               (unsigned)inRangeCount, (unsigned)UWB_W_UNLOCK, UWB_R_UNLOCK, dist);
+                    SendActuatorCmd(ACTUATOR_CMD_UNLOCK);
+                    g_unlockMs = now;
+                    LogUwbEvt("UNLOCK", seq, dist, inRangeCount, now - g_rangingStartMs);
+                    g_fsmState    = FSM_UNLOCKED;
+                    inHist        = 0;
+                    inRangeCount  = 0;
+                    outRangeCount = 0;
                 }
             }
-            // ── FSM_UNLOCKED ───────────────────────────────────────────────
+            // ── FSM_UNLOCKED: ra tới R_LOCK rồi 10 mẫu liên tiếp không giảm → relock ──
             else if (state == FSM_UNLOCKED)
             {
-                // UWB đang ở low-power mode (đo thưa mỗi ~2.5s) nhưng vòng lặp này vẫn
-                // poll mỗi 100ms -> cùng 1 mẫu cũ sẽ được đọc lại nhiều lần. Chỉ đếm khi
-                // giá trị THỰC SỰ đổi (mẫu mới), tránh outRangeCount tăng giả do đọc trùng.
-                bool isNewSample = (!lastRelockDistValid) || (dist != lastRelockDist);
-                lastRelockDist      = dist;
-                lastRelockDistValid = true;
-
-                if (dist > UWB_R_LOCK)
+                if (dist >= UWB_R_LOCK)
                 {
-                    if (isNewSample)
-                    {
+                    if (outRangeCount == 0 || dist < prevOutDist - UWB_RELOCK_TREND_TOL_M)
+                        outRangeCount = 1; // bắt đầu chuỗi, hoặc mẫu giảm -> đếm lại từ mẫu này
+                    else
                         outRangeCount++;
-                        LOG_PRINTF("[CAR FSM ] Xa vung lock (%.2f m), outRangeCount=%u/%u\n",
-                                   dist, outRangeCount, UWB_M_RELOCK);
-                    }
+                    prevOutDist = dist;
 
-                    if (outRangeCount >= UWB_M_RELOCK)
+                    LOG_PRINTF("[CAR FSM ] Ngoai R_LOCK (%.2f m), xu huong tang %u/%u\n",
+                               dist, (unsigned)outRangeCount, (unsigned)UWB_N_RELOCK);
+
+                    if (outRangeCount >= UWB_N_RELOCK)
                     {
                         LOG_PRINTLN("[CAR FSM ] Relock");
+                        LogUwbEvt("RELOCK", seq, dist, outRangeCount, now - g_unlockMs);
                         SendActuatorCmd(ACTUATOR_CMD_LOCK);
                         UWB_StopRanging();
                         g_fsmState    = FSM_COOLDOWN;
                         outRangeCount = 0;
-                        lastRelockDistValid = false;
+                        seqValid      = false;
                         vTaskDelay(pdMS_TO_TICKS(FSM_COOLDOWN_MS));
                         ResumeTrackingOrIdleAfterCooldown();
                     }
                 }
-                else
+                else if (outRangeCount > 0)
                 {
-                    // Trở lại gần - reset bộ đếm
-                    if (outRangeCount > 0 && isNewSample)
-                    {
-                        LOG_PRINTF("[CAR FSM ] Quay lai vung an toan (%.2f m), reset outRangeCount\n", dist);
-                        outRangeCount = 0;
-                    }
+                    // Vào lại trong R_LOCK - reset chuỗi
+                    LOG_PRINTF("[CAR FSM ] Quay lai trong R_LOCK (%.2f m), reset dem relock\n", dist);
+                    outRangeCount = 0;
                 }
             }
         }
         else
         {
             // FSM_IDLE / FSM_COOLDOWN - không cần làm gì, chờ
-            inRangeStarted      = false;
-            unlockAbortCount    = 0;
-            outRangeCount       = 0;
-            lastRelockDistValid = false;
+            inHist        = 0;
+            inRangeCount  = 0;
+            outRangeCount = 0;
+            seqValid      = false;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(UNLOCK_POLL_MS));
     }
 }
 
@@ -1080,6 +1104,8 @@ void TaskLogic(void *pvParameters)
                 if (isValid)
                 {
                     LOG_PRINTLN("[CAR AUTH ] SUCCESS");
+                    // LOG_PRINTF("[CAR TIME ] BLE connect -> auth OK: %lu ms\n",
+                    //            (unsigned long)(millis() - BLE_Car_GetConnectMs()));
                     BLE_Car_SetState(CAR_AUTHENTICATED);
 
                     tx.type = PKT_AUTH_OK;
@@ -1107,6 +1133,8 @@ void TaskLogic(void *pvParameters)
                         LOG_PRINTLN("[CAR ERROR] UWB Init that bai");
                         break;
                     }
+                    // LOG_PRINTF("[CAR TIME ] BLE connect -> UWB init xong: %lu ms\n",
+                    //            (unsigned long)(millis() - BLE_Car_GetConnectMs()));
 
                     if (g_kSessionReady)
                     {
@@ -1116,9 +1144,13 @@ void TaskLogic(void *pvParameters)
                             LOG_PRINTLN("[CAR UWB  ] K_session nap vao STS OK");
                     }
 
+                    // Log mốc TRƯỚC khi start (xem ResumeTrackingOrIdleAfterCooldown).
+                    g_rangingStartMs = millis();
+                    LogUwbEvt("START", 0, 0.0f, 0, g_rangingStartMs - BLE_Car_GetConnectMs());
                     if (UWB_StartRanging())
                     {
                         LOG_PRINTLN("[CAR UWB  ] Ranging started");
+                        g_firstSamplePending = true;
                         g_fsmState  = FSM_TRACKING;
                         g_lastBleMs = millis();
                     }
